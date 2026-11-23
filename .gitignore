@@ -1,0 +1,9 @@
+.env
+.env.local
+node_modules/
+dist/
+server/.runtime/
+*.db
+*.sqlite
+*.ehpk
+.DS_Store

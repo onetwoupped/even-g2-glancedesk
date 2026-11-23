@@ -1,0 +1,7 @@
+# GlanceDesk — 2m30s Demo Video Script (Even Hub Simulator)
+
+- **0:00 – 0:20 (Problem & Moment):** Show Telegram test group side-by-side with Even Hub Simulator running GlanceDesk on the 576×288 green display. Explain: *"When alpha hits Telegram, checking your phone breaks focus. GlanceDesk pairs live Telegram alerts with live Hyperliquid perps right on Even G2."*
+- **0:20 – 0:50 (Live Read):** Send a real message in Telegram: `"SOL breakout incoming, watching funding!"`. Show it immediately appearing on G2 paired automatically with live Hyperliquid `SOL-PERP` mark price, 24h change, and funding rate.
+- **0:50 – 1:25 (Write #1 — 1-Tap Telegram Smart Reply & Voice):** Single-tap on G2 -> select contextual reply with live price -> single-tap to send. Show the real `[G2]` reply landing live inside Telegram! Then demonstrate hold-mic voice reply (`LONG_PRESS`) posting `[G2 Voice]` to Telegram.
+- **1:25 – 2:05 (Write #2 — Live Hyperliquid Paper Execution + Telegram Receipt):** Tap -> Open Paper Order -> flip LONG/SHORT -> confirm `$250` paper perp at live Hyperliquid mark price. Show (a) updated live Paper Portfolio & mark-to-market PnL on G2 and (b) automatic `[GlanceDesk G2 · HYPERLIQUID PAPER]` receipt posted into Telegram.
+- **2:05 – 2:30 (QA & Close):** Double-tap on root screen to show mandatory `shutDownPageContainer(1)` exit dialog, briefly show `app.json` whitelist, `.ehpk` package, and passing `npm test`. Done!
