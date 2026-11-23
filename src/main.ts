@@ -1,10 +1,13 @@
 import {
   closePaperPosition,
+  dismissAlert,
   fetchBackendState,
   fetchCandles,
+  moveStopToBE,
   placePaperOrder,
   sendTelegramReply,
   sendVoiceReply,
+  takePartialProfit,
 } from './api';
 import { connectEvenBridge, type GlassesHost } from './bridge';
 import { drawG2Preview } from './preview';
@@ -14,9 +17,14 @@ import {
   formatPx,
   getActiveFeedMessage,
   getActiveMarket,
-  getReplyOptions,
+  getActivePosition,
+  getActiveTriggeredAlert,
+  getAlertActions,
+  getManageActions,
+  getReplyActions,
   renderPage,
   type Gesture,
+  type HudAction,
 } from './state';
 
 const canvas = document.getElementById('g2-canvas') as HTMLCanvasElement;
@@ -43,11 +51,10 @@ function updateStatusBar(): void {
   const port = ui.data.portfolio;
   statusEl.innerHTML =
     `<strong>Telegram:</strong> @${tg.botUsername || 'sezirneonbot'} ` +
-    `(${tg.activeChatId ? `chat ${tg.activeChatTitle || tg.activeChatId}` : 'waiting for 1st group msg'}) · ` +
-    `<strong>Hyperliquid:</strong> ${ui.data.markets.length} live perps · ` +
-    `<strong>Paper Cash:</strong> $${port.cashUsd.toFixed(2)} · ` +
-    `<strong>PnL:</strong> ${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)} · ` +
-    `<strong>Alerts:</strong> ${port.alerts.length} active (PAPER ONLY)`;
+    `(${tg.activeChatId ? tg.activeChatTitle || tg.activeChatId : 'waiting for msg'}) · ` +
+    `<strong>Hyperliquid:</strong> ${ui.data.markets.length} perps · ` +
+    `<strong>Paper:</strong> $${port.cashUsd.toFixed(0)} (${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}) · ` +
+    `<strong>Open:</strong> ${port.openCount} · <strong>Alerts:</strong> ${port.alerts.length}`;
 }
 
 async function ensureActiveCandles(): Promise<void> {
@@ -55,20 +62,17 @@ async function ensureActiveCandles(): Promise<void> {
   if (!mkt) return;
   if (ui.candles && ui.candles.symbol === mkt.symbol && ui.candles.closes.length >= 2) return;
   try {
-    ui.candles = await fetchCandles(mkt.symbol);
+    ui.candles = await fetchCandles(mkt.symbol, '15m');
   } catch {
-    // Non-fatal; text-only fallback still renders cleanly
+    // Non-fatal
   }
 }
 
 async function paint(forceRebuild = false): Promise<void> {
   const page = renderPage(ui);
   updateStatusBar();
-  if (host) {
-    await host.render(page, forceRebuild);
-  } else {
-    drawG2Preview(canvas, page);
-  }
+  if (host) await host.render(page, forceRebuild);
+  else drawG2Preview(canvas, page);
 }
 
 async function syncState(refresh = false): Promise<void> {
@@ -98,11 +102,119 @@ function concatUint8(chunks: Uint8Array[]): string {
   return btoa(bin);
 }
 
+async function executeAction(action: HudAction): Promise<void> {
+  const pos = getActivePosition(ui);
+  const alert = getActiveTriggeredAlert(ui);
+  const mkt = getActiveMarket(ui);
+  const msg = getActiveFeedMessage(ui);
+  const notional = PAPER_NOTIONALS[ui.orderStakeIndex % PAPER_NOTIONALS.length];
+
+  try {
+    if (action.kind === 'MOVE_BE' && pos) {
+      const res = await moveStopToBE(pos.id);
+      if (ui.data) ui.data.portfolio = res.portfolio;
+      ui.toast = `BE set @ ${formatPx(res.position.stopLoss)}`;
+      log(`Stop moved to Break-Even on ${pos.symbol}`);
+      ui.view = 'GLANCE';
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'TAKE_HALF' && pos) {
+      const res = await takePartialProfit(pos.id, 0.5);
+      if (ui.data) ui.data.portfolio = res.portfolio;
+      ui.toast = `50% closed (${res.partial.realizedPnlUsd >= 0 ? '+' : ''}$${res.partial.realizedPnlUsd.toFixed(1)})`;
+      log(`Took 50% profit on ${pos.symbol}`);
+      ui.view = 'GLANCE';
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'CLOSE_POS' && pos) {
+      const res = await closePaperPosition({ positionId: pos.id, notifyTelegram: true });
+      if (ui.data) ui.data.portfolio = res.portfolio;
+      ui.toast = `Closed ${pos.symbol} (${res.closed.realizedPnlUsd >= 0 ? '+' : ''}$${res.closed.realizedPnlUsd.toFixed(1)})`;
+      log(`Closed ${pos.symbol} @ ${formatPx(res.closed.exitPrice)}`);
+      ui.view = 'GLANCE';
+      await paint(true);
+      return;
+    }
+
+    if ((action.kind === 'OPEN_SHORT' || action.kind === 'OPEN_LONG') && mkt) {
+      const side = action.kind === 'OPEN_SHORT' ? 'SHORT' : 'LONG';
+      const res = await placePaperOrder({
+        marketId: mkt.id,
+        symbol: mkt.symbol,
+        side,
+        notionalUsd: notional,
+        price: mkt.markPx,
+        slPct: 1.5,
+        rrRatio: 2.0,
+        notifyTelegram: true,
+      });
+      if (ui.data) ui.data.portfolio = res.portfolio;
+      if (alert) await dismissAlert(alert.id);
+      ui.toast = `${side} ${mkt.symbol} $${notional} (SL/2R)`;
+      log(`Opened paper ${side} ${mkt.symbol} @ ${formatPx(mkt.markPx)}`);
+      ui.view = 'MANAGE';
+      ui.actionIndex = 0;
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'DISMISS_ALERT' && alert) {
+      const res = await dismissAlert(alert.id);
+      if (ui.data) ui.data.portfolio = res.portfolio;
+      ui.toast = 'Alert dismissed';
+      ui.actionIndex = 0;
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'SEND_TG_REPLY' && action.payload) {
+      await sendTelegramReply({
+        chatId: msg?.chatId,
+        text: action.payload,
+        replyToMessageId: msg?.messageId,
+      });
+      ui.toast = 'Sent';
+      log(`Reply sent: ${action.payload}`);
+      ui.view = 'GLANCE';
+      await syncState(false);
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'GO_ENTRY') {
+      await ensureActiveCandles();
+      ui.view = 'ENTRY';
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'GO_MANAGE') {
+      ui.actionIndex = 0;
+      ui.view = 'MANAGE';
+      await paint(true);
+      return;
+    }
+
+    if (action.kind === 'GO_REPLY') {
+      ui.actionIndex = 0;
+      ui.view = 'REPLY';
+      await paint(true);
+    }
+  } catch (err) {
+    ui.toast = String((err as Error)?.message || err).slice(0, 28);
+    await paint(false);
+  }
+}
+
 async function handleGesture(g: Gesture): Promise<void> {
-  log(`Gesture: ${g} (on ${ui.view})`);
+  log(`Gesture: ${g} (${ui.view})`);
   ui.toast = '';
 
-  if (g === 'LONG_PRESS_START' && ui.view === 'FEED') {
+  if (g === 'LONG_PRESS_START' && ui.view === 'GLANCE') {
     ui.view = 'VOICE';
     ui.voiceCapturing = true;
     pcmChunks = [];
@@ -119,19 +231,17 @@ async function handleGesture(g: Gesture): Promise<void> {
     try {
       const res = await sendVoiceReply({
         pcmBase64: concatUint8(pcmChunks),
-        fallbackText: mkt
-          ? `Voice note from G2: tracking ${mkt.symbol}-PERP @ ${formatPx(mkt.markPx)}`
-          : 'Voice ack from Even G2: saw your message.',
+        fallbackText: mkt ? `Watching ${mkt.symbol} at ${formatPx(mkt.markPx)}, checking structure.` : 'Got it, watching now.',
         chatId: msg?.chatId,
         replyToMessageId: msg?.messageId,
         sendToTelegram: true,
       });
-      ui.toast = `VOICE SENT (${res.voice.provider})`;
-      log(`Voice reply sent: "${res.voice.transcript}"`);
+      ui.toast = 'Voice sent';
+      log(`Voice sent: "${res.voice.transcript}"`);
     } catch (err) {
-      ui.toast = `VOICE ERR: ${String((err as Error)?.message || err).slice(0, 32)}`;
+      ui.toast = String((err as Error)?.message || err).slice(0, 24);
     }
-    ui.view = 'FEED';
+    ui.view = 'GLANCE';
     await syncState(false);
     await paint(true);
     return;
@@ -140,12 +250,32 @@ async function handleGesture(g: Gesture): Promise<void> {
   if (ui.view === 'VOICE' && g === 'DOUBLE_TAP') {
     await host?.stopMic();
     ui.voiceCapturing = false;
-    ui.view = 'FEED';
+    ui.view = 'GLANCE';
     await paint(true);
     return;
   }
 
-  if (ui.view === 'FEED') {
+  if (ui.view === 'GLANCE') {
+    const alert = getActiveTriggeredAlert(ui);
+    const pos = getActivePosition(ui);
+    const inPriorityPrompt = Boolean(alert) || Boolean(pos && pos.currentR >= 1.5 && !pos.isBreakEven);
+
+    if (inPriorityPrompt) {
+      const actions = alert ? getAlertActions(ui) : getManageActions(ui).slice(0, 3);
+      if (g === 'SWIPE_DOWN') {
+        ui.actionIndex = (ui.actionIndex + 1) % actions.length;
+        await paint(false);
+      } else if (g === 'SWIPE_UP') {
+        ui.actionIndex = (ui.actionIndex - 1 + actions.length) % actions.length;
+        await paint(false);
+      } else if (g === 'TAP') {
+        await executeAction(actions[ui.actionIndex % actions.length]);
+      } else if (g === 'DOUBLE_TAP') {
+        await host?.exitRoot();
+      }
+      return;
+    }
+
     if (g === 'SWIPE_DOWN') {
       if ((ui.data?.feed.length || 0) > 0) ui.feedIndex += 1;
       else ui.marketIndex += 1;
@@ -157,13 +287,11 @@ async function handleGesture(g: Gesture): Promise<void> {
       await ensureActiveCandles();
       await paint(false);
     } else if (g === 'TAP') {
-      if (getActiveFeedMessage(ui)) {
-        ui.replyOptionIndex = 0;
-        ui.view = 'REPLY';
-      } else {
-        await ensureActiveCandles();
-        ui.view = 'ORDER';
-      }
+      ui.actionIndex = 0;
+      if (pos) ui.view = 'MANAGE';
+      else if (getActiveFeedMessage(ui)) ui.view = 'REPLY';
+      else ui.view = 'ENTRY';
+      await ensureActiveCandles();
       await paint(true);
     } else if (g === 'DOUBLE_TAP') {
       await host?.exitRoot();
@@ -171,118 +299,52 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  if (ui.view === 'REPLY') {
-    const opts = getReplyOptions(ui);
+  if (ui.view === 'MANAGE') {
+    const actions = getManageActions(ui);
     if (g === 'SWIPE_DOWN') {
-      ui.replyOptionIndex = (ui.replyOptionIndex + 1) % opts.length;
+      ui.actionIndex = (ui.actionIndex + 1) % actions.length;
       await paint(false);
     } else if (g === 'SWIPE_UP') {
-      ui.replyOptionIndex = (ui.replyOptionIndex - 1 + opts.length) % opts.length;
+      ui.actionIndex = (ui.actionIndex - 1 + actions.length) % actions.length;
       await paint(false);
-    } else if (g === 'DOUBLE_TAP') {
-      ui.view = 'FEED';
-      await paint(true);
     } else if (g === 'TAP') {
-      const selected = opts[ui.replyOptionIndex % opts.length];
-      if (selected.kind === 'GO_ORDER') {
-        await ensureActiveCandles();
-        ui.view = 'ORDER';
-        await paint(true);
-        return;
-      }
-      if (selected.kind === 'GO_PORT') {
-        ui.view = 'PORT';
-        await paint(true);
-        return;
-      }
-      const msg = getActiveFeedMessage(ui);
-      try {
-        await sendTelegramReply({
-          chatId: msg?.chatId,
-          text: `[G2] ${selected.label}`,
-          replyToMessageId: msg?.messageId,
-        });
-        ui.toast = 'SENT TO TELEGRAM';
-        log(`Telegram reply sent: ${selected.label}`);
-      } catch (err) {
-        ui.toast = `TG ERR: ${String((err as Error)?.message || err).slice(0, 34)}`;
-      }
-      ui.view = 'FEED';
-      await syncState(false);
+      await executeAction(actions[ui.actionIndex % actions.length]);
+    } else if (g === 'DOUBLE_TAP') {
+      ui.view = 'GLANCE';
       await paint(true);
     }
     return;
   }
 
-  if (ui.view === 'ORDER') {
+  if (ui.view === 'ENTRY') {
     if (g === 'SWIPE_DOWN' || g === 'SWIPE_UP') {
-      ui.orderSide = ui.orderSide === 'LONG' ? 'SHORT' : 'LONG';
-      if (g === 'SWIPE_UP') {
-        ui.orderStakeIndex = (ui.orderStakeIndex + 1) % PAPER_NOTIONALS.length;
-      }
+      ui.orderSide = ui.orderSide === 'SHORT' ? 'LONG' : 'SHORT';
+      if (g === 'SWIPE_UP') ui.orderStakeIndex = (ui.orderStakeIndex + 1) % PAPER_NOTIONALS.length;
       await paint(false);
-    } else if (g === 'DOUBLE_TAP') {
-      ui.view = 'FEED';
-      await paint(true);
     } else if (g === 'TAP') {
-      const mkt = getActiveMarket(ui);
-      if (!mkt) {
-        ui.toast = 'NO MARKET LOADED';
-        ui.view = 'FEED';
-        await paint(true);
-        return;
-      }
-      const notional = PAPER_NOTIONALS[ui.orderStakeIndex % PAPER_NOTIONALS.length];
-      try {
-        const res = await placePaperOrder({
-          marketId: mkt.id,
-          symbol: mkt.symbol,
-          side: ui.orderSide,
-          notionalUsd: notional,
-          price: mkt.markPx,
-          notifyTelegram: true,
-        });
-        if (ui.data) ui.data.portfolio = res.portfolio;
-        ui.toast = `PAPER ${ui.orderSide} ${mkt.symbol} $${notional}${res.receiptSent ? ' + TG' : ''}`;
-        log(`Paper order filled: ${ui.orderSide} ${mkt.symbol}-PERP $${notional} @ ${formatPx(mkt.markPx)}`);
-        ui.view = 'PORT';
-        await paint(true);
-      } catch (err) {
-        ui.toast = `ORDER ERR: ${String((err as Error)?.message || err).slice(0, 30)}`;
-        ui.view = 'FEED';
-        await paint(true);
-      }
+      await executeAction({
+        label: ui.orderSide,
+        kind: ui.orderSide === 'SHORT' ? 'OPEN_SHORT' : 'OPEN_LONG',
+      });
+    } else if (g === 'DOUBLE_TAP') {
+      ui.view = 'GLANCE';
+      await paint(true);
     }
     return;
   }
 
-  if (ui.view === 'PORT') {
-    const positions = ui.data?.portfolio.positions || [];
-    if (g === 'SWIPE_DOWN' && positions.length > 0) {
-      ui.portIndex = (ui.portIndex + 1) % positions.length;
+  if (ui.view === 'REPLY') {
+    const actions = getReplyActions(ui);
+    if (g === 'SWIPE_DOWN') {
+      ui.actionIndex = (ui.actionIndex + 1) % actions.length;
       await paint(false);
-    } else if (g === 'SWIPE_UP' && positions.length > 0) {
-      ui.portIndex = (ui.portIndex - 1 + positions.length) % positions.length;
+    } else if (g === 'SWIPE_UP') {
+      ui.actionIndex = (ui.actionIndex - 1 + actions.length) % actions.length;
       await paint(false);
     } else if (g === 'TAP') {
-      if (positions.length > 0) {
-        const target = positions[ui.portIndex % positions.length];
-        try {
-          const res = await closePaperPosition({ positionId: target.id, notifyTelegram: true });
-          if (ui.data) ui.data.portfolio = res.portfolio;
-          const sign = res.closed.realizedPnlUsd >= 0 ? '+' : '';
-          ui.toast = `CLOSED ${res.closed.symbol} (${sign}$${res.closed.realizedPnlUsd.toFixed(2)})`;
-          log(`Closed ${res.closed.symbol} @ ${formatPx(res.closed.exitPrice)} | Realized: ${sign}$${res.closed.realizedPnlUsd.toFixed(2)}`);
-          ui.portIndex = 0;
-          await paint(false);
-        } catch (err) {
-          log(`Close error: ${String((err as Error)?.message || err)}`);
-        }
-      } else {
-        await syncState(true);
-      }
+      await executeAction(actions[ui.actionIndex % actions.length]);
     } else if (g === 'DOUBLE_TAP') {
-      ui.view = 'FEED';
+      ui.view = 'GLANCE';
       await paint(true);
     }
   }
@@ -293,9 +355,10 @@ async function boot(): Promise<void> {
   badgeEl.textContent = host.mode === 'EVEN_G2_SDK' ? 'EVEN G2 LIVE SDK' : 'G2 SIM PREVIEW';
   host.onGesture((g) => void handleGesture(g));
   host.onMenuSelect((id) => {
-    if (id === 1) ui.view = 'FEED';
-    else if (id === 2) ui.view = 'ORDER';
-    else if (id === 3) ui.view = 'PORT';
+    ui.actionIndex = 0;
+    if (id === 1) ui.view = 'GLANCE';
+    else if (id === 2) ui.view = 'MANAGE';
+    else if (id === 3) ui.view = 'ENTRY';
     else if (id === 4) void syncState(true);
     void paint(true);
   });
@@ -320,7 +383,7 @@ async function boot(): Promise<void> {
   });
 
   await syncState(true);
-  setInterval(() => void syncState(false), 10000);
+  setInterval(() => void syncState(false), 8000);
 }
 
 void boot();

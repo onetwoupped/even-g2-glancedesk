@@ -14,24 +14,20 @@ export function buildSmartReplies(messageText, linkedMarket) {
 
   if (linkedMarket) {
     const sign = linkedMarket.change24hPct >= 0 ? '+' : '';
-    replies.push(
-      `Saw ${linkedMarket.symbol} @ ${formatPrice(linkedMarket.markPx)} (${sign}${linkedMarket.change24hPct}%) on G2`
-    );
+    replies.push(`Seeing ${linkedMarket.symbol} at ${formatPrice(linkedMarket.markPx)} (${sign}${linkedMarket.change24hPct}%)`);
   } else {
-    replies.push('Got it, checking Hyperliquid now');
+    replies.push('Got it, checking chart now');
   }
 
-  if (lower.includes('?') || lower.includes('source') || lower.includes('confirm')) {
-    replies.push('Confirmed live on Hyperliquid, watching');
-  } else if (lower.includes('long') || lower.includes('buy') || lower.includes('pump') || lower.includes('bull')) {
-    replies.push('Watching breakout, paper LONG queued');
-  } else if (lower.includes('short') || lower.includes('sell') || lower.includes('dump') || lower.includes('bear')) {
-    replies.push('Noted bearish flow, paper SHORT watch');
+  if (lower.includes('short') || lower.includes('sell') || lower.includes('bear') || lower.includes('bos')) {
+    replies.push('Watching structure break, short level ready');
+  } else if (lower.includes('long') || lower.includes('buy') || lower.includes('bull')) {
+    replies.push('Seeing strength, tracking entry level');
   } else {
-    replies.push('Locked in, tracking on Even G2');
+    replies.push('In a session right now, watching on glasses');
   }
 
-  replies.push('Share target/stop? Hands-free on G2');
+  replies.push('Moving stop to BE, will update soon');
   return replies.slice(0, 3);
 }
 
@@ -86,9 +82,7 @@ export class TelegramService {
   }
 
   async _call(method, body = null) {
-    if (!this.configured) {
-      throw new Error('TELEGRAM_BOT_TOKEN not configured in .env');
-    }
+    if (!this.configured) throw new Error('TELEGRAM_BOT_TOKEN not configured in .env');
     const url = `https://api.telegram.org/bot${this.token}/${method}`;
     const opts = body
       ? {
@@ -101,9 +95,7 @@ export class TelegramService {
 
     const resp = await fetch(url, opts);
     const data = await resp.json();
-    if (!resp.ok || !data.ok) {
-      throw new Error(data.description || `Telegram API HTTP ${resp.status}`);
-    }
+    if (!resp.ok || !data.ok) throw new Error(data.description || `Telegram API HTTP ${resp.status}`);
     return data.result;
   }
 
@@ -144,7 +136,7 @@ export class TelegramService {
         if (!text.trim()) continue;
 
         const chatId = String(msg.chat?.id || '');
-        const chatTitle = msg.chat?.title || msg.chat?.username || 'Telegram Chat';
+        const chatTitle = msg.chat?.title || msg.chat?.username || 'Telegram';
         if (chatId) {
           this.activeChatId = chatId;
           this.activeChatTitle = chatTitle;
@@ -191,9 +183,7 @@ export class TelegramService {
 
   async sendMessage({ chatId, text, replyToMessageId }) {
     const targetChat = String(chatId || this.activeChatId || '').trim();
-    if (!targetChat) {
-      throw new Error('No Telegram chat discovered yet. Send 1 message in your group so the bot learns its chat_id.');
-    }
+    if (!targetChat) throw new Error('No Telegram chat discovered yet.');
     const cleanText = String(text || '').trim();
     if (!cleanText) throw new Error('Message text cannot be empty');
 
@@ -205,8 +195,8 @@ export class TelegramService {
       id: `${targetChat}:${sent.message_id}`,
       messageId: sent.message_id,
       chatId: targetChat,
-      chatTitle: this.activeChatTitle || 'Telegram Chat',
-      sender: this.botInfo?.username ? `@${this.botInfo.username} (G2)` : 'GlanceDesk (G2)',
+      chatTitle: this.activeChatTitle || 'Telegram',
+      sender: this.botInfo?.username ? `@${this.botInfo.username}` : 'GlanceDesk',
       text: cleanText,
       timestamp: (sent.date || Math.floor(Date.now() / 1000)) * 1000,
       direction: 'OUT',

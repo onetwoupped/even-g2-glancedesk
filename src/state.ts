@@ -1,17 +1,17 @@
-import type { BackendState, CandleSeries, FeedMessage, MarketItem } from './api';
-import { buildThreeZonePage, truncate, type G2PageSpec } from './layout';
+import type { BackendState, CandleSeries, FeedMessage, MarketItem, PaperPosition, PriceAlert } from './api';
+import { buildMinimalHudPage, truncate, type G2PageSpec, type G2SparklineSpec } from './layout';
 
-export type ViewName = 'FEED' | 'REPLY' | 'ORDER' | 'PORT' | 'VOICE';
+export type ViewName = 'GLANCE' | 'MANAGE' | 'ENTRY' | 'REPLY' | 'VOICE';
 export type Gesture = 'TAP' | 'DOUBLE_TAP' | 'SWIPE_UP' | 'SWIPE_DOWN' | 'LONG_PRESS_START' | 'LONG_PRESS_END';
 
 export interface AppUIState {
   view: ViewName;
   feedIndex: number;
   marketIndex: number;
-  replyOptionIndex: number;
-  orderSide: 'LONG' | 'SHORT';
+  posIndex: number;
+  actionIndex: number;
+  orderSide: 'SHORT' | 'LONG';
   orderStakeIndex: number;
-  portIndex: number;
   toast: string;
   voiceCapturing: boolean;
   data: BackendState | null;
@@ -28,18 +28,29 @@ export function formatPx(px: number): string {
 
 export function createInitialUIState(): AppUIState {
   return {
-    view: 'FEED',
+    view: 'GLANCE',
     feedIndex: 0,
     marketIndex: 0,
-    replyOptionIndex: 0,
-    orderSide: 'LONG',
+    posIndex: 0,
+    actionIndex: 0,
+    orderSide: 'SHORT',
     orderStakeIndex: 1, // $250 default
-    portIndex: 0,
     toast: '',
     voiceCapturing: false,
     data: null,
     candles: null,
   };
+}
+
+export function getActiveTriggeredAlert(st: AppUIState): PriceAlert | null {
+  return st.data?.portfolio.activeTriggeredAlerts?.[0] || null;
+}
+
+export function getActivePosition(st: AppUIState): PaperPosition | null {
+  const list = st.data?.portfolio.positions || [];
+  if (list.length === 0) return null;
+  const idx = ((st.posIndex % list.length) + list.length) % list.length;
+  return list[idx];
 }
 
 export function getActiveFeedMessage(st: AppUIState): FeedMessage | null {
@@ -50,6 +61,16 @@ export function getActiveFeedMessage(st: AppUIState): FeedMessage | null {
 }
 
 export function getActiveMarket(st: AppUIState): MarketItem | null {
+  const al = getActiveTriggeredAlert(st);
+  if (al && st.data?.markets) {
+    const found = st.data.markets.find((m) => m.symbol.toUpperCase() === al.symbol.toUpperCase());
+    if (found) return found;
+  }
+  const pos = getActivePosition(st);
+  if (st.view === 'MANAGE' && pos && st.data?.markets) {
+    const found = st.data.markets.find((m) => m.symbol.toUpperCase() === pos.symbol.toUpperCase());
+    if (found) return found;
+  }
   const msg = getActiveFeedMessage(st);
   if (msg?.linkedMarket) return msg.linkedMarket;
   const mkts = st.data?.markets || [];
@@ -58,17 +79,64 @@ export function getActiveMarket(st: AppUIState): MarketItem | null {
   return mkts[idx];
 }
 
-export function getReplyOptions(st: AppUIState): Array<{ label: string; kind: 'TG_REPLY' | 'GO_ORDER' | 'GO_PORT' }> {
+export interface HudAction {
+  label: string;
+  kind:
+    | 'MOVE_BE'
+    | 'TAKE_HALF'
+    | 'CLOSE_POS'
+    | 'OPEN_SHORT'
+    | 'OPEN_LONG'
+    | 'DISMISS_ALERT'
+    | 'GO_ENTRY'
+    | 'GO_MANAGE'
+    | 'GO_REPLY'
+    | 'SEND_TG_REPLY';
+  payload?: string;
+}
+
+export function getManageActions(st: AppUIState): HudAction[] {
+  const pos = getActivePosition(st);
+  if (!pos) {
+    return [
+      { label: 'New paper setup', kind: 'GO_ENTRY' },
+      { label: 'Reply in Telegram', kind: 'GO_REPLY' },
+    ];
+  }
+  const halfPnl = pos.unrealizedPnlUsd * 0.5;
+  const hSign = halfPnl >= 0 ? '+' : '';
+  const fSign = pos.unrealizedPnlUsd >= 0 ? '+' : '';
+  return [
+    {
+      label: pos.isBreakEven ? `Stop at BE (${formatPx(pos.entryPrice)})` : `Move stop to BE (${formatPx(pos.entryPrice)})`,
+      kind: 'MOVE_BE',
+    },
+    { label: `Take 50% (${hSign}$${halfPnl.toFixed(1)})`, kind: 'TAKE_HALF' },
+    { label: `Close all (${fSign}$${pos.unrealizedPnlUsd.toFixed(1)})`, kind: 'CLOSE_POS' },
+    { label: 'New setup / Reply', kind: 'GO_ENTRY' },
+  ];
+}
+
+export function getAlertActions(st: AppUIState): HudAction[] {
+  const notional = PAPER_NOTIONALS[st.orderStakeIndex % PAPER_NOTIONALS.length];
+  return [
+    { label: `Short $${notional} · SL +1.5% · TP 2R`, kind: 'OPEN_SHORT' },
+    { label: `Long  $${notional} · SL -1.5% · TP 2R`, kind: 'OPEN_LONG' },
+    { label: 'Dismiss alert', kind: 'DISMISS_ALERT' },
+  ];
+}
+
+export function getReplyActions(st: AppUIState): HudAction[] {
   const msg = getActiveFeedMessage(st);
   const smart = msg?.smartReplies || [
-    'Checking Hyperliquid mark now',
-    'Locked in, watching on G2',
-    'Share target/stop? Hands-free',
+    'Seeing the move, checking level',
+    'In a lecture, managing on glasses',
+    'Stop moved to BE, will update',
   ];
   return [
-    ...smart.map((label) => ({ label, kind: 'TG_REPLY' as const })),
-    { label: 'Open Paper Order + Live Chart', kind: 'GO_ORDER' as const },
-    { label: 'View Paper Portfolio / Close Pos', kind: 'GO_PORT' as const },
+    ...smart.map((label) => ({ label, kind: 'SEND_TG_REPLY' as const, payload: label })),
+    { label: 'Open paper trade', kind: 'GO_ENTRY' as const },
+    { label: 'Manage open position', kind: 'GO_MANAGE' as const },
   ];
 }
 
@@ -80,149 +148,170 @@ function fmtAge(ts: number): string {
   return `${Math.floor(min / 60)}h`;
 }
 
+function buildSparkline(st: AppUIState, mkt: MarketItem | null, refLevel?: number, refLabel?: string): G2SparklineSpec | null {
+  const candles = st.candles || st.data?.candles || null;
+  if (!mkt || !candles || candles.symbol !== mkt.symbol || candles.closes.length < 2) return null;
+  return {
+    symbol: mkt.symbol,
+    interval: candles.interval || '15m',
+    closes: candles.closes,
+    change24hPct: mkt.change24hPct,
+    refLevel,
+    refLabel,
+  };
+}
+
 export function renderPage(st: AppUIState): G2PageSpec {
   const port = st.data?.portfolio;
-  const bal = port ? `$${port.cashUsd.toFixed(0)}` : '$10000';
-  const pnl = port ? `${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}` : '+$0.00';
-  const activeAlert = port?.recentTriggeredAlerts?.[0];
+  const pos = getActivePosition(st);
+  const alert = getActiveTriggeredAlert(st);
+  const mkt = getActiveMarket(st);
 
   if (st.view === 'VOICE') {
     const msg = getActiveFeedMessage(st);
-    return buildThreeZonePage({
+    return buildMinimalHudPage({
       view: 'VOICE',
-      header: 'G2 MIC LIVE · VOICE REPLY',
-      body: [
-        '● LISTENING ON EVEN G2 MICROPHONE...',
+      eyebrow: 'voice reply · listening',
+      main: [
+        '● Listening...',
         '',
-        `Target: ${msg ? `${msg.sender} (${msg.chatTitle})` : 'Active Telegram Group'}`,
-        'Speak short reply or perp action.',
-        'Release temple / ring to send to Telegram.',
+        msg ? `To ${msg.sender}` : 'To Telegram group',
+        'Release when finished.',
       ].join('\n'),
-      footer: 'RELEASE: Send Voice Reply · DBL-TAP: Cancel',
+      hint: 'release send · dbl cancel',
     });
   }
 
-  if (st.view === 'FEED') {
-    const msg = getActiveFeedMessage(st);
-    const mkt = getActiveMarket(st);
-    const candles = st.candles || st.data?.candles || null;
-    const sparkline =
-      mkt && candles && candles.symbol === mkt.symbol && candles.closes.length >= 2
-        ? { symbol: mkt.symbol, closes: candles.closes, change24hPct: mkt.change24hPct }
-        : null;
-
-    if (!msg) {
-      const mSign = mkt && mkt.change24hPct >= 0 ? '+' : '';
-      const mLine = mkt
-        ? `${mkt.symbol}-PERP ${formatPx(mkt.markPx)}\n24h: ${mSign}${mkt.change24hPct}% · Fund: ${mkt.fundingHourlyPct}%`
-        : 'Loading live Hyperliquid perps...';
-      return buildThreeZonePage({
-        view: 'FEED',
-        header: `GLANCEDESK · TG READY · ${bal}`,
-        body: [
-          st.toast ? `[!] ${st.toast}` : `Bot @${st.data?.telegram.botUsername || 'sezirneonbot'} live.`,
-          'Send msg in TG (or /price /alert).',
+  // Root GLANCE view: automatically shows the ONE urgent thing right now
+  if (st.view === 'GLANCE') {
+    // Priority 1: Active triggered price alert (structure check -> 1-tap short/long)
+    if (alert && mkt) {
+      const actions = getAlertActions(st);
+      const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
+      const sign = mkt.change24hPct >= 0 ? '+' : '';
+      return buildMinimalHudPage({
+        view: 'GLANCE',
+        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()}-perp · paper`,
+        main: [
+          `${mkt.symbol}  ${formatPx(mkt.markPx)}  ${sign}${mkt.change24hPct}%`,
+          alert.note ? truncate(alert.note, 34) : `crossed ${formatPx(alert.targetPrice)}`,
           '',
-          mLine,
+          ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
         ].join('\n'),
-        footer: 'TAP: Paper Perp · SWIPE: Next · DBL: Exit',
-        sparkline,
+        hint: 'swipe pick · tap execute · dbl exit',
+        sparkline: buildSparkline(st, mkt, alert.targetPrice, 'alert'),
       });
     }
 
-    const total = st.data?.feed.length || 1;
-    const pos = (((st.feedIndex % total) + total) % total) + 1;
-    const mSign = mkt && mkt.change24hPct >= 0 ? '+' : '';
-    const mktLine = mkt
-      ? `${mkt.symbol}-PERP ${formatPx(mkt.markPx)} (${mSign}${mkt.change24hPct}%)`
-      : 'Syncing Hyperliquid...';
-    const hdr = activeAlert
-      ? `ALERT ${activeAlert.symbol} ${activeAlert.direction} ${formatPx(activeAlert.targetPrice)}!`
-      : `TG [${pos}/${total}] ${truncate(msg.sender, 16)} · ${fmtAge(msg.timestamp)}`;
+    // Priority 2: Open position reached >= 1.5R (Break-Even prompt!)
+    if (pos && pos.currentR >= 1.5 && !pos.isBreakEven) {
+      const actions = getManageActions(st).slice(0, 3);
+      const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
+      const posMkt = st.data?.markets.find((m) => m.symbol === pos.symbol) || mkt;
+      return buildMinimalHudPage({
+        view: 'GLANCE',
+        eyebrow: `1.5R reached · ${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()}`,
+        main: [
+          `${pos.symbol} ${pos.side}   +${pos.currentR}R`,
+          `${formatPx(pos.markPx)}  (in ${formatPx(pos.entryPrice)})`,
+          '',
+          ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
+        ].join('\n'),
+        hint: 'swipe pick · tap act · dbl exit',
+        sparkline: buildSparkline(st, posMkt, pos.entryPrice, 'entry'),
+      });
+    }
 
-    return buildThreeZonePage({
-      view: 'FEED',
-      header: hdr,
-      body: [
-        st.toast ? `✓ ${st.toast}` : '',
-        truncate(msg.text, 95),
-        '',
-        mktLine,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      footer: 'TAP: Reply/Trade · SWIPE: Next · HOLD: Voice · DBL: Exit',
-      sparkline,
-    });
-  }
-
-  if (st.view === 'REPLY') {
+    // Priority 3: Clean Telegram glance paired with live perp + structure curve
     const msg = getActiveFeedMessage(st);
-    const opts = getReplyOptions(st);
-    const idx = ((st.replyOptionIndex % opts.length) + opts.length) % opts.length;
-    const lines = opts.map((o, i) => `${i === idx ? '▶ ' : '  '}${truncate(o.label, 46)}`);
-    return buildThreeZonePage({
-      view: 'REPLY',
-      header: `ACT ON: ${msg ? truncate(msg.sender, 24) : 'TELEGRAM'}`,
-      body: lines.join('\n'),
-      footer: 'SWIPE: Select · TAP: Confirm/Send · DBL: Back',
-    });
-  }
+    if (msg) {
+      const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
+      const posLine = pos
+        ? `${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R${pos.isBreakEven ? ' (BE)' : ''}`
+        : mkt
+          ? `${mkt.symbol}  ${formatPx(mkt.markPx)}  ${sign}${mkt.change24hPct}%`
+          : '';
+      return buildMinimalHudPage({
+        view: 'GLANCE',
+        eyebrow: `${truncate(msg.sender, 20)} · ${fmtAge(msg.timestamp)}${st.toast ? ` · ${st.toast}` : ''}`,
+        main: [
+          truncate(msg.text, 88),
+          '',
+          posLine,
+          pos ? '› Tap to manage position' : '› Tap to reply or trade',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        hint: 'tap act · swipe next · hold voice · dbl exit',
+        sparkline: buildSparkline(st, mkt, pos && pos.symbol === mkt?.symbol ? pos.stopLoss : undefined, pos?.isBreakEven ? 'BE' : 'SL'),
+      });
+    }
 
-  if (st.view === 'ORDER') {
-    const mkt = getActiveMarket(st);
-    const notional = PAPER_NOTIONALS[st.orderStakeIndex % PAPER_NOTIONALS.length];
-    const px = mkt ? mkt.markPx : 0;
-    const qty = px > 0 ? (notional / px).toFixed(3) : '0';
+    // Fallback when no Telegram messages yet: clean perp glance
     const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
-    const candles = st.candles || st.data?.candles || null;
-    const sparkline =
-      mkt && candles && candles.symbol === mkt.symbol && candles.closes.length >= 2
-        ? { symbol: mkt.symbol, closes: candles.closes, change24hPct: mkt.change24hPct }
-        : null;
-
-    return buildThreeZonePage({
-      view: 'ORDER',
-      header: `HYPERLIQUID PAPER (SIM) · ${bal}`,
-      body: [
-        mkt ? `${mkt.symbol}-PERP · ${formatPx(mkt.markPx)}` : 'No live market loaded',
-        mkt ? `24h: ${sign}${mkt.change24hPct}% · Fund: ${mkt.fundingHourlyPct}%` : '',
+    return buildMinimalHudPage({
+      view: 'GLANCE',
+      eyebrow: `glancedesk · ${mkt ? mkt.symbol.toLowerCase() : 'ready'} · paper`,
+      main: [
+        mkt ? `${mkt.symbol}  ${formatPx(mkt.markPx)}  ${sign}${mkt.change24hPct}%` : 'Connecting to Hyperliquid...',
+        st.toast || 'Send /alert NEAR 4.20 in Telegram',
         '',
-        `[ ${st.orderSide} $${notional} ] (${qty} ${mkt?.symbol || ''})`,
-        'Simulated only · Receipt -> TG',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      footer: 'SWIPE: Flip Side/Size · TAP: Confirm · DBL: Back',
-      sparkline,
+        pos ? `Open: ${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '› Tap to open paper setup',
+      ].join('\n'),
+      hint: 'tap trade · swipe coin · dbl exit',
+      sparkline: buildSparkline(st, mkt),
     });
   }
 
-  // PORT view — Single TAP closes selected open position!
-  const positions = port?.positions || [];
-  let bodyLines: string[];
-  if (positions.length === 0) {
-    bodyLines = [
-      'No open paper perp positions.',
-      `Cash: ${bal} | Realized: $${(port?.realizedPnlUsd ?? 0).toFixed(2)}`,
-      'Go back to FEED -> TAP -> Open Paper Order.',
-    ];
-  } else {
-    const selectedIdx = ((st.portIndex % positions.length) + positions.length) % positions.length;
-    const start = Math.max(0, selectedIdx - 1);
-    const slice = positions.slice(start, start + 3);
-    bodyLines = slice.map((p, idx) => {
-      const absIdx = start + idx;
-      const sign = p.unrealizedPnlUsd >= 0 ? '+' : '';
-      const cur = absIdx === selectedIdx ? '▶ ' : '  ';
-      return `${cur}${p.side} ${p.symbol} $${p.notionalUsd} @${formatPx(p.entryPrice)}→${formatPx(p.markPx)} (${sign}$${p.unrealizedPnlUsd.toFixed(2)})`;
+  if (st.view === 'MANAGE') {
+    const actions = getManageActions(st);
+    const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
+    const posMkt = pos ? st.data?.markets.find((m) => m.symbol === pos.symbol) || mkt : mkt;
+    const rStr = pos ? `${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '';
+    return buildMinimalHudPage({
+      view: 'MANAGE',
+      eyebrow: pos
+        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} · sl ${formatPx(pos.stopLoss)}${pos.isBreakEven ? ' (be)' : ''}`
+        : 'positions · none open',
+      main: [
+        pos ? `${pos.symbol} ${pos.side}   ${rStr}` : 'No open paper positions',
+        pos ? `${formatPx(pos.markPx)}  (in ${formatPx(pos.entryPrice)})` : `Cash $${(port?.cashUsd ?? 10000).toFixed(0)}`,
+        '',
+        ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
+      ].join('\n'),
+      hint: 'swipe pick · tap confirm · dbl back',
+      sparkline: buildSparkline(st, posMkt, pos?.stopLoss, pos?.isBreakEven ? 'BE' : 'SL'),
     });
   }
 
-  return buildThreeZonePage({
-    view: 'PORT',
-    header: `PORTFOLIO · PNL ${pnl} · ${bal}`,
-    body: bodyLines.join('\n'),
-    footer: positions.length > 0 ? 'SWIPE: Select · TAP: Close Pos + TG · DBL: Feed' : 'TAP: Refresh · DBL: Feed',
+  if (st.view === 'ENTRY') {
+    const notional = PAPER_NOTIONALS[st.orderStakeIndex % PAPER_NOTIONALS.length];
+    const px = mkt?.markPx || 0;
+    const slPx = st.orderSide === 'SHORT' ? px * 1.015 : px * 0.985;
+    const tpPx = st.orderSide === 'SHORT' ? px * 0.97 : px * 1.03;
+    const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
+    return buildMinimalHudPage({
+      view: 'ENTRY',
+      eyebrow: `paper setup · ${mkt ? mkt.symbol.toLowerCase() : 'perp'} · 2R auto`,
+      main: [
+        mkt ? `${mkt.symbol}  ${formatPx(px)}  ${sign}${mkt.change24hPct}%` : 'Loading mark...',
+        '',
+        `› ${st.orderSide} $${notional} (paper)`,
+        `  SL ${formatPx(slPx)} · TP ${formatPx(tpPx)}`,
+      ].join('\n'),
+      hint: 'swipe flip side/size · tap enter · dbl back',
+      sparkline: buildSparkline(st, mkt, slPx, 'SL'),
+    });
+  }
+
+  // REPLY view
+  const msg = getActiveFeedMessage(st);
+  const actions = getReplyActions(st);
+  const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
+  return buildMinimalHudPage({
+    view: 'REPLY',
+    eyebrow: msg ? `reply to ${truncate(msg.sender, 24)}` : 'quick actions',
+    main: actions.map((a, i) => `${i === sel ? '› ' : '  '}${truncate(a.label, 42)}`).join('\n'),
+    hint: 'swipe pick · tap send · dbl back',
   });
 }

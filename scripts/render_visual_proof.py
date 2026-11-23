@@ -4,14 +4,13 @@ from pathlib import Path
 
 W, H = 576, 288
 
-# Minimal 5x7 uppercase/ASCII bitmap glyphs for clear pixel-exact verification
 FONT = {
     'A': ["01110","10001","10001","11111","10001","10001","10001"],
     'B': ["11110","10001","10001","11110","10001","10001","11110"],
     'C': ["01110","10001","10000","10000","10000","10001","01110"],
     'D': ["11100","10010","10001","10001","10001","10010","11100"],
     'E': ["11111","10000","10000","11110","10000","10000","11111"],
-    'F': ["11111","10000","10000","11110","10000","10000","10000"],
+    'F': ["11111","10000","10000","11110","10000","10000","00000"],
     'G': ["01110","10001","10000","10111","10001","10001","01110"],
     'H': ["10001","10001","10001","11111","10001","10001","10001"],
     'I': ["01110","00100","00100","00100","00100","00100","01110"],
@@ -51,10 +50,7 @@ FONT = {
     '/': ["00001","00010","00100","00100","01000","10000","00000"],
     '(': ["00010","00100","01000","01000","01000","00100","00010"],
     ')': ["01000","00100","00010","00010","00010","00100","01000"],
-    '[': ["01110","01000","01000","01000","01000","01000","01110"],
-    ']': ["01110","00010","00010","00010","00010","00010","01110"],
-    '@': ["01110","10001","10111","10101","10110","10000","01110"],
-    '|': ["00100","00100","00100","00100","00100","00100","00100"],
+    '>': ["10000","01000","00100","00010","00100","01000","10000"],
     ' ': ["00000","00000","00000","00000","00000","00000","00000"],
 }
 
@@ -67,15 +63,6 @@ def set_px(buf, x, y, rgb):
     if 0 <= x < W and 0 <= y < H:
         i = (y * W + x) * 3
         buf[i : i + 3] = bytes(rgb)
-
-
-def draw_rect(buf, x, y, w, h, rgb):
-    for dx in range(w):
-        set_px(buf, x + dx, y, rgb)
-        set_px(buf, x + dx, y + h - 1, rgb)
-    for dy in range(h):
-        set_px(buf, x, y + dy, rgb)
-        set_px(buf, x + w - 1, y + dy, rgb)
 
 
 def draw_line(buf, x0, y0, x1, y1, rgb, thick=1):
@@ -101,6 +88,46 @@ def draw_text(buf, x, y, text, rgb, scale=2):
         cx += 6 * scale
 
 
+def draw_borderless_chart(buf, cx, cy, cw, ch, title, closes, ref_val, ref_label):
+    bright = (56, 255, 146)
+    soft = (28, 138, 76)
+    ref_col = (34, 175, 96)
+
+    draw_text(buf, cx + 4, cy + 2, title, soft, scale=1)
+
+    all_v = closes + ([ref_val] if ref_val is not None else [])
+    mn, mx = min(all_v), max(all_v)
+    span = mx - mn or 1.0
+    pad_l, pad_r, pad_t, pad_b = 4, 8, 18, 18
+    pw, ph = cw - pad_l - pad_r, ch - pad_t - pad_b
+
+    def to_y(v):
+        return int(cy + pad_t + (1.0 - (v - mn) / span) * ph)
+
+    if ref_val is not None:
+        ry = to_y(ref_val)
+        for dx in range(0, pw, 7):
+            draw_line(buf, cx + pad_l + dx, ry, cx + pad_l + min(dx + 3, pw), ry, ref_col, 1)
+        lbl_w = len(ref_label) * 6
+        lbl_y = ry + 4 if ry < cy + pad_t + ph // 2 else max(cy + 14, ry - 10)
+        draw_text(buf, cx + pad_l + pw - lbl_w, lbl_y, ref_label, soft, scale=1)
+
+    pts = [
+        (int(cx + pad_l + (i / (len(closes) - 1)) * pw), to_y(v))
+        for i, v in enumerate(closes)
+    ]
+    for i in range(len(pts) - 1):
+        draw_line(buf, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], bright, thick=2)
+
+    ex, ey = pts[-1]
+    for oy in range(-3, 4):
+        for ox in range(-3, 4):
+            if ox * ox + oy * oy <= 9:
+                set_px(buf, ex + ox, ey + oy, bright)
+
+    draw_text(buf, cx + 4, cy + ch - 11, f"{mn:.2f} - {mx:.2f}", soft, scale=1)
+
+
 def save_png(buf, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     raw_rows = bytearray()
@@ -117,79 +144,43 @@ def save_png(buf, path: Path):
     path.write_bytes(png)
 
 
-def render_g2_feed_with_sparkline(out_path: Path):
+def render_screens(out_dir: Path):
+    bright = (56, 255, 146)
+    mid = (32, 168, 92)
+    dim = (18, 96, 52)
+
+    # Screen 1: 1.5R Break-Even Prompt (In-lecture / hands-free position management)
     buf = make_canvas()
-    bright = (46, 255, 136)
-    mid = (24, 155, 82)
-    dim = (14, 88, 46)
-    fill = (8, 42, 22)
+    draw_text(buf, 16, 14, "1.5R REACHED - SOL SHORT", dim, scale=1)
+    draw_text(buf, 16, 48, "SOL SHORT  +1.52R", bright, scale=2)
+    draw_text(buf, 16, 76, "$70.75 (IN $72.40)", mid, scale=2)
+    draw_text(buf, 16, 128, "> MOVE STOP TO BE ($72.40)", bright, scale=2)
+    draw_text(buf, 16, 158, "  TAKE 50% (+$19.0)", mid, scale=2)
+    draw_text(buf, 16, 188, "  CLOSE ALL (+$38.0)", mid, scale=2)
+    draw_text(buf, 16, 260, "SWIPE PICK - TAP ACT - DBL EXIT", dim, scale=1)
 
-    # Exact GlanceDesk v2 layout coordinates from src/layout.ts:
-    # hdr: (0, 0, 576, 40)
-    draw_rect(buf, 0, 0, 576, 40, mid)
-    draw_text(buf, 10, 12, "TG [1/1] @ONEUPPED | 1M AGO", bright, scale=2)
+    sol_closes = [72.5, 72.4, 72.6, 72.3, 72.1, 72.2, 71.9, 71.8, 71.6, 71.7, 71.4, 71.2, 71.3, 71.0, 70.9, 70.75]
+    draw_borderless_chart(buf, 374, 56, 186, 126, "SOL 15M", sol_closes, 72.40, "ENTRY")
+    save_png(buf, out_dir / "g2_feed_preview.png")
 
-    # main: (0, 46, 372, 178)
-    draw_rect(buf, 0, 46, 372, 178, dim)
-    draw_text(buf, 12, 62, "SOL BREAKOUT INCOMING", bright, scale=2)
-    draw_text(buf, 12, 86, "WATCHING FUNDING RATE", mid, scale=2)
-    draw_text(buf, 12, 134, "SOL-PERP $72.13 (+2.1%)", bright, scale=2)
-    draw_text(buf, 12, 162, "FUND +0.001% | BAL $9750", mid, scale=2)
+    # Screen 2: Price Alert Hit -> Structure Break -> 1-Tap Short with Auto SL / 2R TP
+    buf2 = make_canvas()
+    draw_text(buf2, 16, 14, "ALERT HIT - NEAR-PERP - PAPER", dim, scale=1)
+    draw_text(buf2, 16, 48, "NEAR  $4.19  -1.8%", bright, scale=2)
+    draw_text(buf2, 16, 76, "STRUCTURE BREAK $4.20", mid, scale=2)
+    draw_text(buf2, 16, 128, "> SHORT $250 SL+1.5% 2R", bright, scale=2)
+    draw_text(buf2, 16, 158, "  LONG  $250 SL-1.5% 2R", mid, scale=2)
+    draw_text(buf2, 16, 188, "  DISMISS ALERT", mid, scale=2)
+    draw_text(buf2, 16, 260, "SWIPE PICK - TAP EXECUTE - DBL EXIT", dim, scale=1)
 
-    # chart imageObject: (380, 64, 192, 140)
-    cx, cy, cw, ch = 380, 64, 192, 140
-    draw_rect(buf, cx, cy, cw, ch, mid)
-    draw_text(buf, cx + 8, cy + 8, "SOL 24H +2.1%", bright, scale=1)
-
-    # Realistic 24h SOL curve
-    closes = [70.6,70.8,70.5,70.9,71.2,71.0,70.7,70.9,71.1,71.5,71.4,71.3,71.6,71.8,71.5,71.9,72.0,71.7,71.8,72.1,72.3,72.0,72.2,72.13]
-    mn, mx = min(closes), max(closes)
-    span = mx - mn or 1.0
-    pad_l, pad_r, pad_t, pad_b = 10, 12, 26, 22
-    pw, ph = cw - pad_l - pad_r, ch - pad_t - pad_b
-
-    # Dashed mid line
-    mid_y = cy + pad_t + ph // 2
-    for dx in range(0, pw, 6):
-        draw_line(buf, cx + pad_l + dx, mid_y, cx + pad_l + min(dx + 2, pw), mid_y, dim, 1)
-
-    pts = []
-    for i, val in enumerate(closes):
-        px = int(cx + pad_l + (i / (len(closes) - 1)) * pw)
-        py = int(cy + pad_t + (1.0 - (val - mn) / span) * ph)
-        pts.append((px, py))
-
-    # Fill under curve
-    base_y = cy + pad_t + ph
-    for i in range(len(pts) - 1):
-        x0, y0 = pts[i]
-        x1, y1 = pts[i + 1]
-        for px in range(x0, x1 + 1):
-            t = (px - x0) / max(1, x1 - x0)
-            yt = int(y0 + (y1 - y0) * t)
-            for py in range(yt, base_y):
-                set_px(buf, px, py, fill)
-
-    for i in range(len(pts) - 1):
-        draw_line(buf, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], bright, thick=2)
-
-    # Endpoint dot
-    ex, ey = pts[-1]
-    for oy in range(-3, 4):
-        for ox in range(-3, 4):
-            if ox * ox + oy * oy <= 10:
-                set_px(buf, ex + ox, ey + oy, bright)
-
-    draw_text(buf, cx + 8, cy + ch - 15, f"L:{mn:.2f} H:{mx:.2f}", mid, scale=1)
-
-    # act footer: (0, 230, 576, 58)
-    draw_rect(buf, 0, 230, 576, 58, dim)
-    draw_text(buf, 10, 250, "TAP: REPLY/TRADE | SWIPE: NEXT | DBL: EXIT", mid, scale=2)
-
-    save_png(buf, out_path)
+    near_closes = [4.28, 4.30, 4.31, 4.29, 4.26, 4.27, 4.25, 4.23, 4.24, 4.22, 4.21, 4.22, 4.20, 4.18, 4.19]
+    draw_borderless_chart(buf2, 374, 56, 186, 126, "NEAR 15M", near_closes, 4.20, "ALERT")
+    save_png(buf2, out_dir / "g2_alert_entry.png")
 
 
 if __name__ == "__main__":
-    out = Path(__file__).resolve().parent.parent / "artifacts" / "g2_feed_preview.png"
-    render_g2_feed_with_sparkline(out)
-    print(f"Rendered {out} ({out.stat().st_size} bytes)")
+    art_dir = Path(__file__).resolve().parent.parent / "artifacts"
+    render_screens(art_dir)
+    for fn in ("g2_feed_preview.png", "g2_alert_entry.png"):
+        p = art_dir / fn
+        print(f"Rendered {p} ({p.stat().st_size} bytes)")

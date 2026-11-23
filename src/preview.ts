@@ -4,15 +4,13 @@ import { drawSparklineOnCanvas } from './sparkline';
 function level15ToGreen(level: number): string {
   const clamped = Math.max(0, Math.min(15, Math.round(level)));
   const g = Math.round((clamped / 15) * 255);
-  const r = Math.round(g * 0.18);
-  const b = Math.round(g * 0.42);
-  return `rgb(${r}, ${g}, ${b})`;
+  return `rgb(${Math.round(g * 0.16)}, ${g}, ${Math.round(g * 0.4)})`;
 }
 
 function textBrightness4ToGreen(level: number): string {
-  const map = [45, 95, 155, 205, 255];
+  const map = [55, 110, 165, 215, 255];
   const g = map[Math.max(0, Math.min(4, Math.round(level)))];
-  return `rgb(${Math.round(g * 0.18)}, ${g}, ${Math.round(g * 0.42)})`;
+  return `rgb(${Math.round(g * 0.16)}, ${g}, ${Math.round(g * 0.4)})`;
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
@@ -47,7 +45,6 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, G2_WIDTH, G2_HEIGHT);
 
-  ctx.font = '15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.textBaseline = 'top';
 
   for (const c of page.textObject) {
@@ -56,6 +53,11 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
       ctx.lineWidth = c.borderWidth;
       ctx.strokeRect(c.xPosition + 1, c.yPosition + 1, c.width - 2, c.height - 2);
     }
+
+    ctx.font =
+      c.containerName === 'eyebrow' || c.containerName === 'hint'
+        ? '13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+        : '16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
     ctx.save();
     ctx.beginPath();
@@ -71,27 +73,18 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
     const maxW = Math.max(20, c.width - c.paddingLength * 2);
     const lines = wrapText(ctx, c.content, maxW);
     let y = c.yPosition + c.paddingLength;
+    const step = c.containerName === 'main' ? 24 : 18;
     for (const ln of lines) {
       if (y > c.yPosition + c.height - 8) break;
       ctx.fillText(ln, c.xPosition + c.paddingLength, y);
-      y += 22;
+      y += step;
     }
     ctx.restore();
   }
 
   for (const img of page.imageObject || []) {
     if (img.sparkline) {
-      drawSparklineOnCanvas(
-        ctx,
-        img.xPosition,
-        img.yPosition,
-        img.width,
-        img.height,
-        img.sparkline.symbol,
-        img.sparkline.closes,
-        img.sparkline.change24hPct,
-        true
-      );
+      drawSparklineOnCanvas(ctx, img.xPosition, img.yPosition, img.width, img.height, img.sparkline, true);
     }
   }
 }

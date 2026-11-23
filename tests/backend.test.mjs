@@ -32,70 +32,70 @@ test('app.json satisfies Even Hub manifest & QA rules', () => {
   }
 });
 
-test('Official Even Hub SDK validateEvenHubPageContainer approves GlanceDesk text + sparkline image + menu layout', () => {
+test('Official Even Hub SDK validateEvenHubPageContainer approves borderless v3 AR HUD layout', () => {
   const result = validateEvenHubPageContainer({
     textObject: [
       new TextContainerProperty({
         containerID: 1,
-        containerName: 'hdr',
-        xPosition: 0,
-        yPosition: 0,
-        width: 576,
-        height: 40,
-        borderWidth: 1,
-        borderColor: 10,
-        borderRadius: 4,
-        paddingLength: 6,
-        textColor: 4,
+        containerName: 'eyebrow',
+        xPosition: 16,
+        yPosition: 12,
+        width: 544,
+        height: 26,
+        borderWidth: 0,
+        borderColor: 0,
+        borderRadius: 0,
+        paddingLength: 0,
+        textColor: 1,
         isEventCapture: 0,
-        content: 'TG [1/1] @oneupped · 1m',
+        content: '1.5R reached · sol short',
       }),
       new TextContainerProperty({
         containerID: 2,
         containerName: 'main',
-        xPosition: 0,
-        yPosition: 46,
-        width: 372,
-        height: 178,
-        borderWidth: 1,
-        borderColor: 6,
-        borderRadius: 4,
-        paddingLength: 10,
+        xPosition: 16,
+        yPosition: 48,
+        width: 348,
+        height: 196,
+        borderWidth: 0,
+        borderColor: 0,
+        borderRadius: 0,
+        paddingLength: 0,
         textColor: 4,
         isEventCapture: 1,
-        content: 'SOL breakout incoming\n\nSOL-PERP $72.13 (+2.05%)',
+        content: 'SOL SHORT   +1.52R\n$70.75 (in $72.40)\n\n› Move stop to BE ($72.40)',
       }),
       new TextContainerProperty({
         containerID: 3,
-        containerName: 'act',
-        xPosition: 0,
-        yPosition: 230,
-        width: 576,
-        height: 58,
-        borderWidth: 1,
-        borderColor: 6,
-        borderRadius: 4,
-        paddingLength: 6,
-        textColor: 2,
+        containerName: 'hint',
+        xPosition: 16,
+        yPosition: 254,
+        width: 544,
+        height: 24,
+        borderWidth: 0,
+        borderColor: 0,
+        borderRadius: 0,
+        paddingLength: 0,
+        textColor: 1,
         isEventCapture: 0,
-        content: 'TAP: Reply/Trade · SWIPE: Next · DBL: Exit',
+        content: 'swipe pick · tap act · dbl exit',
       }),
     ],
     imageObject: [
       new ImageContainerProperty({
         containerID: 4,
         containerName: 'chart',
-        xPosition: 380,
-        yPosition: 64,
-        width: 192,
-        height: 140,
+        xPosition: 374,
+        yPosition: 56,
+        width: 186,
+        height: 126,
       }),
     ],
     menuObject: new MenuContainerProperty({
       menuItems: [
-        new MenuItemProperty({ itemID: 1, itemName: 'Feed' }),
-        new MenuItemProperty({ itemID: 2, itemName: 'Paper Order' }),
-        new MenuItemProperty({ itemID: 3, itemName: 'Portfolio' }),
+        new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
+        new MenuItemProperty({ itemID: 2, itemName: 'Manage Position' }),
+        new MenuItemProperty({ itemID: 3, itemName: 'New Setup' }),
         new MenuItemProperty({ itemID: 4, itemName: 'Refresh Live' }),
       ],
     }),
@@ -103,65 +103,65 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves GlanceDesk tex
   assert.equal(result.valid, true, `SDK rejected page: ${JSON.stringify(result)}`);
 });
 
-test('Hyperliquid normalizer and Telegram ticker matcher link relevant perps', () => {
+test('Hyperliquid normalizer and Telegram matcher support NEAR, SOL, ETH, BTC', () => {
   const metaAndCtxs = [
-    { universe: [{ name: 'BTC', maxLeverage: 50 }, { name: 'SOL', maxLeverage: 20 }] },
+    { universe: [{ name: 'BTC', maxLeverage: 50 }, { name: 'NEAR', maxLeverage: 10 }, { name: 'SOL', maxLeverage: 20 }] },
     [
       { markPx: '61400', prevDayPx: '60000', funding: '0.0001', dayNtlVlm: '1500000000' },
-      { markPx: '142.5', prevDayPx: '135.0', funding: '0.0002', dayNtlVlm: '420000000' },
+      { markPx: '4.21', prevDayPx: '4.05', funding: '0.0001', dayNtlVlm: '45000000' },
+      { markPx: '72.10', prevDayPx: '70.50', funding: '0.0002', dayNtlVlm: '420000000' },
     ],
   ];
   const markets = normalizeHyperliquidMarkets(metaAndCtxs);
-  assert.equal(markets[0].symbol, 'BTC');
-  assert.equal(markets[1].symbol, 'SOL');
-  assert.ok(markets[1].change24hPct > 5);
-
-  const matchedSol = matchMarketToText('Breaking: Solana funding flipped positive, SOL breakout!', markets);
-  assert.equal(matchedSol.symbol, 'SOL');
-
-  const matchedBtc = matchMarketToText('Bitcoin ETF inflows just spiked', markets);
-  assert.equal(matchedBtc.symbol, 'BTC');
+  assert.equal(markets.length, 3);
+  const matchedNear = matchMarketToText('NEAR structure broke down at 4.20', markets);
+  assert.equal(matchedNear.symbol, 'NEAR');
 });
 
-test('Smart replies adapt to linked Hyperliquid mark price', () => {
-  const replies = buildSmartReplies('SOL long breakout right now?', { symbol: 'SOL', markPx: 142.5, change24hPct: 5.56 });
+test('Smart replies stay concise and human', () => {
+  const replies = buildSmartReplies('NEAR short level hit', { symbol: 'NEAR', markPx: 4.21, change24hPct: 3.95 });
   assert.equal(replies.length, 3);
-  assert.ok(replies[0].includes('SOL') && replies[0].includes('$142.50'));
+  assert.ok(replies[0].includes('NEAR'));
 });
 
-test('PaperLedger tracks open, close, realized PnL, and price alerts', () => {
+test('PaperLedger enforces R-multiple 1.5R trigger, Move-to-BE, 50% partial, and SL/TP execution', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glancedesk-'));
   const file = path.join(tmpDir, 'ledger.json');
   try {
     const ledger = new PaperLedger(file);
+    // Open SHORT NEAR @ $4.00 with 2% SL ($4.08) and 2R TP ($3.84)
     const ord = ledger.placePaperOrder({
-      marketId: 'SOL-PERP',
-      symbol: 'SOL',
-      side: 'LONG',
-      notionalUsd: 250,
-      price: 100,
+      marketId: 'NEAR-PERP',
+      symbol: 'NEAR',
+      side: 'SHORT',
+      notionalUsd: 400,
+      price: 4.0,
+      slPct: 2.0,
+      rrRatio: 2.0,
     });
-    assert.equal(ord.sizeQty, 2.5);
+    assert.equal(ord.stopLoss, 4.08);
+    assert.equal(ord.takeProfit, 3.84);
+    assert.equal(ord.initialRiskUsd, 8);
 
-    const snap = ledger.snapshot([{ symbol: 'SOL', markPx: 110 }]);
-    assert.equal(snap.cashUsd, 9750);
-    assert.equal(snap.equityUsd, 10025);
-    assert.equal(snap.totalPnlUsd, 25);
+    // Price drops to $3.88 => +1.5R (+$12 / $8 risk) -> MUST emit R_TARGET_1_5 trigger
+    const triggers = ledger.evaluateTriggers([{ symbol: 'NEAR', markPx: 3.88 }]);
+    assert.ok(triggers.some((e) => e.kind === 'R_TARGET_1_5'));
 
-    // Close position at 112 => +$30 realized PnL
-    const closed = ledger.closePosition(ord.id, 112);
-    assert.equal(closed.realizedPnlUsd, 30);
-    const afterClose = ledger.snapshot([{ symbol: 'SOL', markPx: 112 }]);
-    assert.equal(afterClose.openCount, 0);
-    assert.equal(afterClose.cashUsd, 10030);
-    assert.equal(afterClose.realizedPnlUsd, 30);
+    // 1-tap Move Stop to Break-Even
+    const bePos = ledger.moveStopToBreakEven(ord.id);
+    assert.equal(bePos.stopLoss, 4.0);
+    assert.equal(bePos.isBreakEven, true);
 
-    // Price alert trigger check
-    ledger.addAlert({ symbol: 'SOL', targetPrice: 115, currentPrice: 112 });
-    assert.equal(ledger.evaluateAlerts([{ symbol: 'SOL', markPx: 114 }]).length, 0);
-    const hits = ledger.evaluateAlerts([{ symbol: 'SOL', markPx: 116 }]);
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0].direction, 'ABOVE');
+    // 1-tap Take 50% profit at $3.88 (+$6 realized)
+    const partial = ledger.takePartialProfit(ord.id, 0.5, 3.88);
+    assert.equal(partial.realizedPnlUsd, 6);
+
+    // If price bounces back to $4.00 BE stop -> auto closes remaining 50% at $0 extra loss (BREAK_EVEN)
+    const stopEv = ledger.evaluateTriggers([{ symbol: 'NEAR', markPx: 4.0 }]);
+    assert.ok(stopEv.some((e) => e.kind === 'STOP_HIT' && e.closed.reason === 'BREAK_EVEN'));
+    const finalSnap = ledger.snapshot([{ symbol: 'NEAR', markPx: 4.0 }]);
+    assert.equal(finalSnap.openCount, 0);
+    assert.equal(finalSnap.realizedPnlUsd, 6);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

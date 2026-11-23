@@ -11,6 +11,7 @@ export interface MarketItem {
 
 export interface CandleSeries {
   symbol: string;
+  interval?: string;
   fetchedAt: number;
   closes: number[];
   high: number;
@@ -37,9 +38,14 @@ export interface PaperPosition {
   side: 'LONG' | 'SHORT';
   notionalUsd: number;
   entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  initialRiskUsd: number;
+  isBreakEven: boolean;
   sizeQty: number;
   markPx: number;
   unrealizedPnlUsd: number;
+  currentR: number;
   pctPnl: number;
   markValueUsd: number;
   createdAt: string;
@@ -50,7 +56,9 @@ export interface PriceAlert {
   symbol: string;
   direction: 'ABOVE' | 'BELOW';
   targetPrice: number;
+  note?: string;
   triggered: boolean;
+  dismissed?: boolean;
   triggeredPrice?: number;
 }
 
@@ -63,7 +71,7 @@ export interface PortfolioSnapshot {
   openCount: number;
   positions: PaperPosition[];
   alerts: PriceAlert[];
-  recentTriggeredAlerts: PriceAlert[];
+  activeTriggeredAlerts: PriceAlert[];
   updatedAt: string;
 }
 
@@ -109,9 +117,9 @@ export async function fetchBackendState(refresh = false): Promise<BackendState> 
   return requestJson<BackendState>(`/api/state${refresh ? '?refresh=1' : ''}`);
 }
 
-export async function fetchCandles(symbol: string): Promise<CandleSeries> {
+export async function fetchCandles(symbol: string, interval = '15m'): Promise<CandleSeries> {
   const res = await requestJson<{ ok: boolean; candles: CandleSeries }>(
-    `/api/candles?symbol=${encodeURIComponent(symbol)}`
+    `/api/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`
   );
   return res.candles;
 }
@@ -133,11 +141,35 @@ export async function placePaperOrder(params: {
   side: 'LONG' | 'SHORT';
   notionalUsd: number;
   price: number;
+  slPct?: number;
+  rrRatio?: number;
   notifyTelegram?: boolean;
 }): Promise<{ ok: boolean; portfolio: PortfolioSnapshot; receiptSent: boolean }> {
   return requestJson('/api/paper/order', {
     method: 'POST',
     body: JSON.stringify(params),
+  });
+}
+
+export async function moveStopToBE(positionId?: string): Promise<{
+  ok: boolean;
+  position: PaperPosition;
+  portfolio: PortfolioSnapshot;
+}> {
+  return requestJson('/api/paper/be', {
+    method: 'POST',
+    body: JSON.stringify({ positionId, notifyTelegram: true }),
+  });
+}
+
+export async function takePartialProfit(positionId?: string, ratio = 0.5): Promise<{
+  ok: boolean;
+  partial: { symbol: string; realizedPnlUsd: number };
+  portfolio: PortfolioSnapshot;
+}> {
+  return requestJson('/api/paper/partial', {
+    method: 'POST',
+    body: JSON.stringify({ positionId, ratio, notifyTelegram: true }),
   });
 }
 
@@ -148,11 +180,17 @@ export async function closePaperPosition(params: {
   ok: boolean;
   closed: { symbol: string; side: string; realizedPnlUsd: number; exitPrice: number };
   portfolio: PortfolioSnapshot;
-  receiptSent: boolean;
 }> {
   return requestJson('/api/paper/close', {
     method: 'POST',
     body: JSON.stringify(params),
+  });
+}
+
+export async function dismissAlert(alertId: string): Promise<{ ok: boolean; portfolio: PortfolioSnapshot }> {
+  return requestJson('/api/alerts/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ alertId }),
   });
 }
 

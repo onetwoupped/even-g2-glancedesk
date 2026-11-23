@@ -32,7 +32,6 @@ function mapOsEventToGesture(eventType: number | undefined): Gesture | null {
   switch (eventType) {
     case OsEventTypeList.CLICK_EVENT:
     case undefined:
-      // Official SDK quirk: protobuf enum 0 (CLICK_EVENT) can normalize to undefined
       return 'TAP';
     case OsEventTypeList.DOUBLE_CLICK_EVENT:
       return 'DOUBLE_TAP';
@@ -59,9 +58,9 @@ export function isEvenWebView(): boolean {
 function buildContextMenu(): MenuContainerProperty {
   return new MenuContainerProperty({
     menuItems: [
-      new MenuItemProperty({ itemID: 1, itemName: 'Feed' }),
-      new MenuItemProperty({ itemID: 2, itemName: 'Paper Order' }),
-      new MenuItemProperty({ itemID: 3, itemName: 'Portfolio' }),
+      new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
+      new MenuItemProperty({ itemID: 2, itemName: 'Manage Position' }),
+      new MenuItemProperty({ itemID: 3, itemName: 'New Setup' }),
       new MenuItemProperty({ itemID: 4, itemName: 'Refresh Live' }),
     ],
   });
@@ -72,7 +71,7 @@ export async function connectEvenBridge(
   onLog: (msg: string) => void
 ): Promise<GlassesHost> {
   if (!isEvenWebView()) {
-    onLog('Running in Browser 576x288 Preview Mode (launch Even Hub Simulator for native SDK bridge).');
+    onLog('Running in Browser 576x288 Preview Mode (use npm run sim for official Even Hub Simulator).');
     let gestureCb: ((g: Gesture) => void) | null = null;
     let menuCb: ((id: number) => void) | null = null;
     return {
@@ -81,7 +80,7 @@ export async function connectEvenBridge(
         onPreviewPage(page);
       },
       async exitRoot() {
-        onLog('QA Check: shutDownPageContainer(1) invoked on root page (native exit dialog).');
+        onLog('QA Check: shutDownPageContainer(1) called on root screen.');
       },
       async startMic(onPcmChunk) {
         onPcmChunk(new Uint8Array(16000));
@@ -99,7 +98,7 @@ export async function connectEvenBridge(
   }
 
   const bridge: EvenAppBridge = await waitForEvenAppBridge();
-  onLog('Connected to Even Realities G2 Bridge via @evenrealities/even_hub_sdk@0.0.16');
+  onLog('Connected to Even Realities G2 Bridge (@evenrealities/even_hub_sdk@0.0.16)');
 
   let initialized = false;
   let lastView: string | null = null;
@@ -179,17 +178,11 @@ export async function connectEvenBridge(
     if (!page.imageObject || page.imageObject.length === 0 || imageSending) return;
     for (const img of page.imageObject) {
       if (!img.sparkline || img.sparkline.closes.length < 2) continue;
-      const key = `${img.sparkline.symbol}:${img.sparkline.closes.slice(-3).join(',')}`;
+      const key = `${img.sparkline.symbol}:${img.sparkline.refLevel ?? ''}:${img.sparkline.closes.slice(-3).join(',')}`;
       if (!force && key === lastSparkKey) continue;
       imageSending = true;
       try {
-        const pngBytes = await renderSparklinePngBytes(
-          img.width,
-          img.height,
-          img.sparkline.symbol,
-          img.sparkline.closes,
-          img.sparkline.change24hPct
-        );
+        const pngBytes = await renderSparklinePngBytes(img.width, img.height, img.sparkline);
         if (pngBytes.length > 0) {
           await bridge.updateImageRawData(
             new ImageRawDataUpdate({
