@@ -245,10 +245,12 @@ test('Multi-position isolation: closing ETH 100% leaves open BTC position comple
   }
 });
 
-test('UX invariants in src/state.ts: no "Close all" ambiguity, no 50/100/200 preset carousel, coin locking present', () => {
+test('UX invariants in src/state.ts: 4-digit exact risk picker, no "Close all", no 50/100/200 preset carousel, coin lock', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'state.ts'), 'utf8');
   assert.doesNotMatch(src, /Close all/i, 'Ambiguous "Close all" label must not exist');
   assert.doesNotMatch(src, /RISK_MULTIPLIERS/, 'Artificial 0.5R/1R/2R multiplier carousel must not exist');
+  assert.doesNotMatch(src, /adjustRiskUsd/, 'Fixed-step swipe jump must be replaced by exact 4-digit picker');
+  assert.match(src, /formatDigitPicker/, 'Must include 4-digit exact $ risk picker ($0001..$9999) on glasses');
   assert.match(src, /Close \$\{sym\} 100%/, 'Must explicitly name the coin being closed (Close <SYM> 100%)');
   assert.match(src, /lockedSymbol/, 'Must lock active coin context so unrelated open positions never hijack feed messages');
 });

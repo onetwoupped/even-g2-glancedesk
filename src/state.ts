@@ -12,11 +12,13 @@ export interface AppUIState {
   actionIndex: number;
   // Coin lock prevents background feed updates or unrelated open positions from hijacking active setup
   lockedSymbol: string | null;
-  // Structure-first 3-step trade ticket: 1) SL -> 2) TP -> 3) Exact $ Risk & Execute
+  // Structure-first 3-step trade ticket: 1) SL -> 2) TP -> 3) Exact $ Risk (4-digit picker) & Execute
   ticketSide: 'SHORT' | 'LONG';
   ticketSlPct: number;
   ticketTpPct: number;
   riskUsd: number;
+  riskDigits: [number, number, number, number]; // [thousands, hundreds, tens, ones] => $0001..$9999
+  riskCursor: number; // 0..3 editing digit, 4 = ready to execute
   toast: string;
   data: BackendState | null;
   candles: CandleSeries | null;
@@ -40,27 +42,21 @@ export function formatQty(qty: number): string {
 }
 
 /**
- * Smooth continuous $ risk adjustment for glasses swipe (no artificial 50/100/200 preset cap).
- * Exact arbitrary numbers (e.g. $242, $850, $35) also sync live from companion input or Telegram /risk.
+ * Convert any dollar amount ($1..$9999) into 4 editable digits [thousands, hundreds, tens, ones]
+ * so the user can enter ANY exact risk (e.g. $240, $253, $850, $35) directly on G2 glasses
+ * using only Swipe Up/Down + Tap (no phone required, no fixed step jumps).
  */
-export function adjustRiskUsd(current: number, direction: 1 | -1): number {
-  const cur = Math.max(1, Number(current) || 100);
-  let step = 50;
-  if (direction > 0) {
-    if (cur < 50) step = 10;
-    else if (cur < 100) step = 25;
-    else if (cur < 500) step = 50;
-    else if (cur < 2000) step = 100;
-    else step = 250;
-  } else {
-    if (cur <= 50) step = 10;
-    else if (cur <= 100) step = 25;
-    else if (cur <= 500) step = 50;
-    else if (cur <= 2000) step = 100;
-    else step = 250;
-  }
-  const next = cur + direction * step;
-  return Math.max(5, Math.min(50000, Math.round(next)));
+export function riskToDigits(usd: number): [number, number, number, number] {
+  const n = Math.max(1, Math.min(9999, Math.round(Number(usd) || 100)));
+  return [Math.floor(n / 1000) % 10, Math.floor(n / 100) % 10, Math.floor(n / 10) % 10, n % 10];
+}
+
+export function digitsToRisk(digits: [number, number, number, number]): number {
+  return digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3];
+}
+
+export function formatDigitPicker(digits: [number, number, number, number], cursor: number): string {
+  return '$' + digits.map((d, i) => (i === cursor ? `[${d}]` : `${d}`)).join(' ');
 }
 
 export function createInitialUIState(): AppUIState {
@@ -75,6 +71,8 @@ export function createInitialUIState(): AppUIState {
     ticketSlPct: 0.75,
     ticketTpPct: 2.0,
     riskUsd: 100,
+    riskDigits: [0, 1, 0, 0],
+    riskCursor: 0,
     toast: '',
     data: null,
     candles: null,
@@ -453,21 +451,45 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 4. STEP 3/3 — CHOOSE EXACT $ RISK & EXECUTE (AUTO-SIZES QTY TO LOCKED SL!)
+  // 4. STEP 3/3 — EXACT 4-DIGIT $ RISK PICKER ON GLASSES ($0001..$9999) + EXECUTE
   if (st.view === 'TICKET_RISK') {
     const px = mkt?.markPx || 0;
     const calc = computeRiskTicket(st, px);
+    const slotNames = ['1000s', '100s', '10s', '1s'];
+    const editing = st.riskCursor >= 0 && st.riskCursor < 4;
+
+    if (editing) {
+      const nextHint = st.riskCursor < 3 ? `Tap -> ${slotNames[st.riskCursor + 1]} digit` : 'Tap -> review & execute';
+      return buildMinimalHudPage({
+        view: 'TICKET_RISK',
+        eyebrow: `3/3 set $ risk (${slotNames[st.riskCursor]}) · ${(mkt?.symbol || 'perp').toLowerCase()}`,
+        main: [
+          `Risk  ${formatDigitPicker(st.riskDigits, st.riskCursor)}`,
+          `Gain  +$${calc.profitUsd.toFixed(0)} (${calc.rr}R)`,
+          `Size  ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
+          `SL ${formatPx(calc.stopLoss)} · TP ${formatPx(calc.takeProfit)}`,
+          nextHint,
+        ].join('\n'),
+        hint: 'up/dn 0-9 · tap next · dbl back',
+        chart: buildChart(st, mkt, [
+          { price: calc.stopLoss, label: 'SL', emphasized: true },
+          { price: px, label: 'IN', emphasized: false },
+          { price: calc.takeProfit, label: 'TP', emphasized: true },
+        ]),
+      });
+    }
+
     return buildMinimalHudPage({
       view: 'TICKET_RISK',
-      eyebrow: `3/3 risk & execute · ${(mkt?.symbol || 'perp').toLowerCase()} ${st.ticketSide.toLowerCase()}`,
+      eyebrow: `confirm paper · ${(mkt?.symbol || 'perp').toLowerCase()} ${st.ticketSide.toLowerCase()}`,
       main: [
-        `› Risk -$${calc.riskUsd} -> +$${calc.profitUsd.toFixed(0)}`,
-        `Size ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
+        `› Execute  -$${calc.riskUsd} -> +$${calc.profitUsd.toFixed(0)}`,
+        `Size  ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
         `SL ${formatPx(calc.stopLoss)} · TP ${formatPx(calc.takeProfit)}`,
-        `Reward ${calc.rr}R`,
+        `Reward  ${calc.rr}R`,
         `Tap to execute paper`,
       ].join('\n'),
-      hint: 'type $ or swipe · tap execute · dbl TP',
+      hint: 'tap execute · dbl edit $ risk',
       chart: buildChart(st, mkt, [
         { price: calc.stopLoss, label: 'SL', emphasized: true },
         { price: px, label: 'IN', emphasized: false },

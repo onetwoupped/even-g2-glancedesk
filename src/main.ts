@@ -12,9 +12,9 @@ import {
 import { connectEvenBridge, type GlassesHost } from './bridge';
 import { drawG2Preview } from './preview';
 import {
-  adjustRiskUsd,
   computeRiskTicket,
   createInitialUIState,
+  digitsToRisk,
   formatPx,
   getActiveFeedMessage,
   getActiveMarket,
@@ -25,6 +25,7 @@ import {
   getReplyActions,
   getUrgentBreakEvenPosition,
   renderPage,
+  riskToDigits,
   type Gesture,
   type HudAction,
 } from './state';
@@ -84,9 +85,10 @@ async function syncState(refresh = false): Promise<void> {
     const prevDefaultRisk = ui.data?.portfolio.defaultRiskUsd;
     ui.data = await fetchBackendState(refresh);
 
-    // Sync /risk <amount> changes made in Telegram live into active ticket
+    // Sync /risk <amount> changes made in Telegram live into active ticket & digits
     if (ui.data.portfolio.defaultRiskUsd && ui.data.portfolio.defaultRiskUsd !== prevDefaultRisk) {
       ui.riskUsd = ui.data.portfolio.defaultRiskUsd;
+      ui.riskDigits = riskToDigits(ui.riskUsd);
       if (riskInput && document.activeElement !== riskInput) {
         riskInput.value = String(ui.riskUsd);
       }
@@ -307,6 +309,8 @@ async function handleGesture(g: Gesture): Promise<void> {
           : Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)));
       await paint(false);
     } else if (g === 'TAP') {
+      ui.riskDigits = riskToDigits(ui.riskUsd);
+      ui.riskCursor = 0;
       ui.view = 'TICKET_RISK';
       await paint(true);
     } else if (g === 'DOUBLE_TAP') {
@@ -316,23 +320,56 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 3/3: Set exact $ Risk for THIS setup & execute (Swipe smoothly or type exact $ live!)
+  // STEP 3/3: On-glasses 4-digit exact $ Risk Picker ($0001..$9999) + Execute
   if (ui.view === 'TICKET_RISK') {
-    if (g === 'SWIPE_UP') {
-      ui.riskUsd = adjustRiskUsd(ui.riskUsd, 1);
-      if (riskInput) riskInput.value = String(ui.riskUsd);
-      await paint(false);
+    if (ui.riskCursor < 4) {
+      if (g === 'SWIPE_UP') {
+        ui.riskDigits[ui.riskCursor] = (ui.riskDigits[ui.riskCursor] + 1) % 10;
+        const val = digitsToRisk(ui.riskDigits);
+        ui.riskUsd = Math.max(1, val);
+        if (riskInput) riskInput.value = String(ui.riskUsd);
+        await paint(false);
+        return;
+      }
+      if (g === 'SWIPE_DOWN') {
+        ui.riskDigits[ui.riskCursor] = (ui.riskDigits[ui.riskCursor] + 9) % 10;
+        const val = digitsToRisk(ui.riskDigits);
+        ui.riskUsd = Math.max(1, val);
+        if (riskInput) riskInput.value = String(ui.riskUsd);
+        await paint(false);
+        return;
+      }
+      if (g === 'TAP') {
+        if (ui.riskCursor < 3) {
+          ui.riskCursor += 1;
+        } else {
+          if (digitsToRisk(ui.riskDigits) < 1) {
+            ui.riskDigits[3] = 1;
+          }
+          ui.riskUsd = Math.max(1, digitsToRisk(ui.riskDigits));
+          if (riskInput) riskInput.value = String(ui.riskUsd);
+          ui.riskCursor = 4; // Move to Confirm & Execute
+        }
+        await paint(false);
+        return;
+      }
+      if (g === 'DOUBLE_TAP') {
+        if (ui.riskCursor > 0) {
+          ui.riskCursor -= 1;
+          await paint(false);
+        } else {
+          ui.view = 'TICKET_TP';
+          await paint(true);
+        }
+        return;
+      }
       return;
     }
-    if (g === 'SWIPE_DOWN') {
-      ui.riskUsd = adjustRiskUsd(ui.riskUsd, -1);
-      if (riskInput) riskInput.value = String(ui.riskUsd);
-      await paint(false);
-      return;
-    }
+
+    // riskCursor === 4: Confirm & Execute screen
     if (g === 'DOUBLE_TAP') {
-      ui.view = 'TICKET_TP';
-      await paint(true);
+      ui.riskCursor = 3;
+      await paint(false);
       return;
     }
     if (g === 'TAP') {
@@ -443,11 +480,12 @@ async function boot(): Promise<void> {
   document.getElementById('btn-down')?.addEventListener('click', () => void handleGesture('SWIPE_DOWN'));
   document.getElementById('btn-dbl')?.addEventListener('click', () => void handleGesture('DOUBLE_TAP'));
 
-  // Live typing sync: typing 242 or 850 updates active G2 HUD immediately on every keystroke!
+  // Live typing sync: typing 242 or 850 updates active G2 HUD & digits immediately on every keystroke!
   riskInput?.addEventListener('input', () => {
     const r = Number(riskInput.value);
     if (Number.isFinite(r) && r >= 1 && r <= 50000) {
       ui.riskUsd = Number(r.toFixed(2));
+      ui.riskDigits = riskToDigits(ui.riskUsd);
       void paint(false);
     }
   });
@@ -456,6 +494,7 @@ async function boot(): Promise<void> {
     const r = Number(riskInput?.value || ui.riskUsd);
     if (!Number.isFinite(r) || r < 1 || r > 50000) return;
     ui.riskUsd = Number(r.toFixed(2));
+    ui.riskDigits = riskToDigits(ui.riskUsd);
     try {
       const res = await saveRiskBudget(ui.riskUsd);
       if (ui.data) ui.data.portfolio = res.portfolio;
