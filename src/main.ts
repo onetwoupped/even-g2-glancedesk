@@ -12,9 +12,9 @@ import {
 import { connectEvenBridge, type GlassesHost } from './bridge';
 import { drawG2Preview } from './preview';
 import {
+  RISK_NUMPAD,
   computeRiskTicket,
   createInitialUIState,
-  digitsToRisk,
   formatPx,
   getActiveFeedMessage,
   getActiveMarket,
@@ -25,7 +25,6 @@ import {
   getReplyActions,
   getUrgentBreakEvenPosition,
   renderPage,
-  riskToDigits,
   type Gesture,
   type HudAction,
 } from './state';
@@ -85,10 +84,9 @@ async function syncState(refresh = false): Promise<void> {
     const prevDefaultRisk = ui.data?.portfolio.defaultRiskUsd;
     ui.data = await fetchBackendState(refresh);
 
-    // Sync /risk <amount> changes made in Telegram live into active ticket & digits
+    // Sync /risk <amount> changes made in Telegram live into active ticket
     if (ui.data.portfolio.defaultRiskUsd && ui.data.portfolio.defaultRiskUsd !== prevDefaultRisk) {
       ui.riskUsd = ui.data.portfolio.defaultRiskUsd;
-      ui.riskDigits = riskToDigits(ui.riskUsd);
       if (riskInput && document.activeElement !== riskInput) {
         riskInput.value = String(ui.riskUsd);
       }
@@ -309,8 +307,9 @@ async function handleGesture(g: Gesture): Promise<void> {
           : Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)));
       await paint(false);
     } else if (g === 'TAP') {
-      ui.riskDigits = riskToDigits(ui.riskUsd);
-      ui.riskCursor = 0;
+      ui.riskDraft = '';
+      ui.padRow = 0;
+      ui.padCol = 0;
       ui.view = 'TICKET_RISK';
       await paint(true);
     } else if (g === 'DOUBLE_TAP') {
@@ -320,56 +319,78 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 3/3: On-glasses 4-digit exact $ Risk Picker ($0001..$9999) + Execute
+  // STEP 3/3: 2D Looping Numpad for unrestricted exact $ Risk
+  // SWIPE_DOWN = move down (wraps), SWIPE_UP = move right (wraps), TAP = pick key, DOUBLE_TAP = confirm & review
   if (ui.view === 'TICKET_RISK') {
-    if (ui.riskCursor < 4) {
-      if (g === 'SWIPE_UP') {
-        ui.riskDigits[ui.riskCursor] = (ui.riskDigits[ui.riskCursor] + 1) % 10;
-        const val = digitsToRisk(ui.riskDigits);
-        ui.riskUsd = Math.max(1, val);
+    const confirmNumpad = async () => {
+      const parsed = Number(ui.riskDraft);
+      if (ui.riskDraft.length > 0 && Number.isFinite(parsed) && parsed >= 1) {
+        ui.riskUsd = parsed;
         if (riskInput) riskInput.value = String(ui.riskUsd);
-        await paint(false);
-        return;
       }
-      if (g === 'SWIPE_DOWN') {
-        ui.riskDigits[ui.riskCursor] = (ui.riskDigits[ui.riskCursor] + 9) % 10;
-        const val = digitsToRisk(ui.riskDigits);
-        ui.riskUsd = Math.max(1, val);
-        if (riskInput) riskInput.value = String(ui.riskUsd);
-        await paint(false);
-        return;
-      }
-      if (g === 'TAP') {
-        if (ui.riskCursor < 3) {
-          ui.riskCursor += 1;
-        } else {
-          if (digitsToRisk(ui.riskDigits) < 1) {
-            ui.riskDigits[3] = 1;
-          }
-          ui.riskUsd = Math.max(1, digitsToRisk(ui.riskDigits));
-          if (riskInput) riskInput.value = String(ui.riskUsd);
-          ui.riskCursor = 4; // Move to Confirm & Execute
-        }
-        await paint(false);
-        return;
-      }
-      if (g === 'DOUBLE_TAP') {
-        if (ui.riskCursor > 0) {
-          ui.riskCursor -= 1;
-          await paint(false);
-        } else {
-          ui.view = 'TICKET_TP';
-          await paint(true);
-        }
-        return;
-      }
+      ui.view = 'TICKET_CONFIRM';
+      await paint(true);
+    };
+
+    if (g === 'SWIPE_DOWN') {
+      ui.padRow = (ui.padRow + 1) % RISK_NUMPAD.length;
+      await paint(false);
       return;
     }
-
-    // riskCursor === 4: Confirm & Execute screen
-    if (g === 'DOUBLE_TAP') {
-      ui.riskCursor = 3;
+    if (g === 'SWIPE_UP') {
+      ui.padCol = (ui.padCol + 1) % RISK_NUMPAD[0].length;
       await paint(false);
+      return;
+    }
+    if (g === 'DOUBLE_TAP') {
+      await confirmNumpad();
+      return;
+    }
+    if (g === 'TAP') {
+      const key = RISK_NUMPAD[ui.padRow][ui.padCol];
+      if (key === '<') {
+        ui.riskDraft = ui.riskDraft.slice(0, -1);
+        const parsed = Number(ui.riskDraft);
+        if (ui.riskDraft.length > 0 && Number.isFinite(parsed) && parsed >= 1) {
+          ui.riskUsd = parsed;
+          if (riskInput) riskInput.value = ui.riskDraft;
+        }
+        await paint(false);
+        return;
+      }
+      if (key === 'OK') {
+        await confirmNumpad();
+        return;
+      }
+      // Digit '0'..'9' (unrestricted length up to 7 digits, ignore leading zero)
+      if (ui.riskDraft === '' && key === '0') {
+        await paint(false);
+        return;
+      }
+      if (ui.riskDraft.length < 7) {
+        ui.riskDraft += key;
+        ui.riskUsd = Number(ui.riskDraft);
+        if (riskInput) riskInput.value = ui.riskDraft;
+      }
+      await paint(false);
+      return;
+    }
+    return;
+  }
+
+  // REVIEW & EXECUTE SCREEN (reached via DOUBLE_TAP or OK from Numpad)
+  if (ui.view === 'TICKET_CONFIRM') {
+    if (g === 'DOUBLE_TAP') {
+      ui.riskDraft = String(Math.round(ui.riskUsd));
+      ui.padRow = 0;
+      ui.padCol = 0;
+      ui.view = 'TICKET_RISK';
+      await paint(true);
+      return;
+    }
+    if (g === 'SWIPE_UP' || g === 'SWIPE_DOWN') {
+      ui.view = 'TICKET_TP';
+      await paint(true);
       return;
     }
     if (g === 'TAP') {
@@ -480,12 +501,12 @@ async function boot(): Promise<void> {
   document.getElementById('btn-down')?.addEventListener('click', () => void handleGesture('SWIPE_DOWN'));
   document.getElementById('btn-dbl')?.addEventListener('click', () => void handleGesture('DOUBLE_TAP'));
 
-  // Live typing sync: typing 242 or 850 updates active G2 HUD & digits immediately on every keystroke!
+  // Live typing sync: typing 242 or 850 updates active G2 HUD immediately on every keystroke!
   riskInput?.addEventListener('input', () => {
     const r = Number(riskInput.value);
     if (Number.isFinite(r) && r >= 1 && r <= 50000) {
       ui.riskUsd = Number(r.toFixed(2));
-      ui.riskDigits = riskToDigits(ui.riskUsd);
+      if (ui.view === 'TICKET_RISK') ui.riskDraft = String(Math.round(ui.riskUsd));
       void paint(false);
     }
   });
@@ -494,7 +515,6 @@ async function boot(): Promise<void> {
     const r = Number(riskInput?.value || ui.riskUsd);
     if (!Number.isFinite(r) || r < 1 || r > 50000) return;
     ui.riskUsd = Number(r.toFixed(2));
-    ui.riskDigits = riskToDigits(ui.riskUsd);
     try {
       const res = await saveRiskBudget(ui.riskUsd);
       if (ui.data) ui.data.portfolio = res.portfolio;

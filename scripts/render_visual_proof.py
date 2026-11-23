@@ -53,6 +53,8 @@ FONT = {
     ')': ["01000","00100","00010","00010","00010","00100","01000"],
     '[': ["01110","01000","01000","01000","01000","01000","01110"],
     ']': ["01110","00010","00010","00010","00010","00010","01110"],
+    '<': ["00001","00010","00100","01000","00100","00010","00001"],
+    '_': ["00000","00000","00000","00000","00000","00000","11111"],
     '>': ["10000","01000","00100","00010","00100","01000","10000"],
     ' ': ["00000","00000","00000","00000","00000","00000","00000"],
 }
@@ -191,15 +193,15 @@ def render_v4(out_dir: Path):
         (1724, 1726, 1721, 1724.9),
     ]
 
-    # Screen 1: v7 On-Glasses 4-Digit Exact $ Risk Picker ($0 [2] 5 3) over 15m OHLC Candles
+    # Screen 1: v8 On-Glasses 2D Looping Numpad (DN row, UP col, TAP pick, DBL confirm)
     buf = make_canvas()
-    draw_text(buf, 16, 12, "3/3 SET $ RISK (100S) - ETH SHORT", dim, scale=1)
-    draw_text(buf, 16, 48, "RISK $0 [2] 5 3", bright, scale=2)
-    draw_text(buf, 16, 78, "GAIN +$635 (2.51R)", bright, scale=2)
-    draw_text(buf, 16, 114, "SIZE 19.31 ETH ($33.3K)", mid, scale=2)
-    draw_text(buf, 16, 146, "SL $1,738 - TP $1,692", mid, scale=2)
-    draw_text(buf, 16, 182, "TAP -> 10S DIGIT", mid, scale=2)
-    draw_text(buf, 16, 260, "UP/DN 0-9 - TAP NEXT - DBL BACK", dim, scale=1)
+    draw_text(buf, 16, 12, "3/3 ENTER $ RISK - ETH SHORT", dim, scale=1)
+    draw_text(buf, 16, 48, "RISK: $253_ (+$635)", bright, scale=2)
+    draw_text(buf, 16, 84, " 1    2   [3]", bright, scale=2)
+    draw_text(buf, 16, 114, " 4    5    6", mid, scale=2)
+    draw_text(buf, 16, 144, " 7    8    9", mid, scale=2)
+    draw_text(buf, 16, 174, " <    0   OK", mid, scale=2)
+    draw_text(buf, 16, 260, "DN ROW - UP COL - TAP PICK - DBL OK", dim, scale=1)
     draw_candles(
         buf, 344, 52, 220, 142, "ETH 15M", eth_bars,
         [(1738.0, "SL", True), (1724.9, "IN", False), (1692.0, "TP", True)]

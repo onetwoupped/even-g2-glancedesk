@@ -20,7 +20,7 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
    - Pick `Short <COIN>` or `Long <COIN>` directly from the active coin's Telegram feed context (coin-locked so an open ETH trade never hijacks a BTC alert).
    - **Step 1/3 (`Place Stop Loss`):** Swipe up/down to place **`SL` directly on the 15m candle structure**.
    - **Step 2/3 (`Place Take Profit`):** Swipe up/down to place **`TP` on the candles** and see the setup's **`R:R` (`2.51R`)**.
-   - **Step 3/3 (`On-Glasses 4-Digit Exact $ Risk Picker` -> `Execute`):** Dial **any exact dollar risk from `$1` to `$9,999`** (e.g., `$0 [2] 5 3` = `$253` or `$0 [2] 4 0` = `$240`) directly on the glasses using only `Swipe Up/Down (0–9)` + `Tap (next digit)` — zero phone needed, zero fixed step jumps (companion input and Telegram `/risk 253` also stay synced). Position size (`qty = risk / |entry - SL|`) and target dollar gain recalculate live on every digit; tap executes and logs the full receipt to Telegram.
+   - **Step 3/3 (`On-Glasses 2D Looping Numpad` -> `Review & Execute`):** Enter **any exact dollar risk of any length** (`$35`, `$253`, `$12,500`) directly on the glasses using a 2D looping keypad (`1–9 / < 0 OK`): **`Swipe Down`** moves down a row (wraps), **`Swipe Up`** moves right a column (wraps), **`Tap`** picks the digit, and **`Double Tap`** (or `OK`) locks the amount and opens the exact Risk/Gain/Size review screen. Single tap executes and logs the receipt to Telegram.
 3. **Explicit Per-Coin Position Management (+1.5R Break-Even & 50% Partial):** Every action names its coin explicitly (`Move ETH SL to BE`, `Take 50% ETH`, `Close ETH 100%`, `Switch to BTC`) so managing multiple open positions is unambiguous.
 
 ---
