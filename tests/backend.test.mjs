@@ -24,7 +24,6 @@ test('app.json satisfies Even Hub manifest & QA rules', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8'));
   assert.match(manifest.package_id, /^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$/);
   assert.equal(manifest.entrypoint, 'index.html');
-  assert.ok(Array.isArray(manifest.permissions) && manifest.permissions.length >= 2);
   const net = manifest.permissions.find((p) => p.name === 'network');
   assert.ok(net && Array.isArray(net.whitelist) && net.whitelist.length >= 1);
   for (const origin of net.whitelist) {
@@ -32,30 +31,30 @@ test('app.json satisfies Even Hub manifest & QA rules', () => {
   }
 });
 
-test('Official Even Hub SDK validateEvenHubPageContainer approves borderless v3 AR HUD layout', () => {
+test('Official Even Hub SDK validateEvenHubPageContainer approves v4 OHLC candlestick HUD layout', () => {
   const result = validateEvenHubPageContainer({
     textObject: [
       new TextContainerProperty({
         containerID: 1,
         containerName: 'eyebrow',
         xPosition: 16,
-        yPosition: 12,
+        yPosition: 6,
         width: 544,
-        height: 26,
+        height: 34,
         borderWidth: 0,
         borderColor: 0,
         borderRadius: 0,
         paddingLength: 0,
         textColor: 1,
         isEventCapture: 0,
-        content: '1.5R reached · sol short',
+        content: '2/4 stop loss · eth short',
       }),
       new TextContainerProperty({
         containerID: 2,
         containerName: 'main',
         xPosition: 16,
-        yPosition: 48,
-        width: 348,
+        yPosition: 46,
+        width: 318,
         height: 196,
         borderWidth: 0,
         borderColor: 0,
@@ -63,40 +62,40 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves borderless v3 
         paddingLength: 0,
         textColor: 4,
         isEventCapture: 1,
-        content: 'SOL SHORT   +1.52R\n$70.75 (in $72.40)\n\n› Move stop to BE ($72.40)',
+        content: 'Entry $1,724.9\n› SL $1,742.1 (1.00%)\n\nRisk -$3.50\n($35 × 10x)',
       }),
       new TextContainerProperty({
         containerID: 3,
         containerName: 'hint',
         xPosition: 16,
-        yPosition: 254,
+        yPosition: 250,
         width: 544,
-        height: 24,
+        height: 34,
         borderWidth: 0,
         borderColor: 0,
         borderRadius: 0,
         paddingLength: 0,
         textColor: 1,
         isEventCapture: 0,
-        content: 'swipe pick · tap act · dbl exit',
+        content: 'swipe move SL · tap set TP · dbl back',
       }),
     ],
     imageObject: [
       new ImageContainerProperty({
         containerID: 4,
         containerName: 'chart',
-        xPosition: 374,
-        yPosition: 56,
-        width: 186,
-        height: 126,
+        xPosition: 344,
+        yPosition: 52,
+        width: 220,
+        height: 142,
       }),
     ],
     menuObject: new MenuContainerProperty({
       menuItems: [
         new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
-        new MenuItemProperty({ itemID: 2, itemName: 'Manage Position' }),
-        new MenuItemProperty({ itemID: 3, itemName: 'New Setup' }),
-        new MenuItemProperty({ itemID: 4, itemName: 'Refresh Live' }),
+        new MenuItemProperty({ itemID: 2, itemName: 'New Trade (SL/TP)' }),
+        new MenuItemProperty({ itemID: 3, itemName: 'Manage Position' }),
+        new MenuItemProperty({ itemID: 4, itemName: 'Cycle Leverage' }),
       ],
     }),
   });
@@ -124,44 +123,65 @@ test('Smart replies stay concise and human', () => {
   assert.ok(replies[0].includes('NEAR'));
 });
 
-test('PaperLedger enforces R-multiple 1.5R trigger, Move-to-BE, 50% partial, and SL/TP execution', () => {
+test('PaperLedger computes exact custom margin ($35 x 10x), custom SL/TP loss & gain, 1.5R BE, and 50% partial', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glancedesk-'));
   const file = path.join(tmpDir, 'ledger.json');
   try {
     const ledger = new PaperLedger(file);
-    // Open SHORT NEAR @ $4.00 with 2% SL ($4.08) and 2R TP ($3.84)
+    ledger.setPreferences({ marginUsd: 35, leverage: 10 });
+
+    // Custom SHORT NEAR: $35 margin x 10x = $350 notional @ $4.00 => 87.5 NEAR
+    // Custom SL = $4.08 => exact loss = $0.08 * 87.5 = $7.00
+    // Custom TP = $3.80 => exact profit = $0.20 * 87.5 = $17.50 (2.5R)
     const ord = ledger.placePaperOrder({
       marketId: 'NEAR-PERP',
       symbol: 'NEAR',
       side: 'SHORT',
-      notionalUsd: 400,
+      marginUsd: 35,
+      leverage: 10,
       price: 4.0,
-      slPct: 2.0,
-      rrRatio: 2.0,
+      stopLoss: 4.08,
+      takeProfit: 3.8,
     });
-    assert.equal(ord.stopLoss, 4.08);
-    assert.equal(ord.takeProfit, 3.84);
-    assert.equal(ord.initialRiskUsd, 8);
+    assert.equal(ord.marginUsd, 35);
+    assert.equal(ord.notionalUsd, 350);
+    assert.equal(ord.initialRiskUsd, 7);
+    assert.equal(ord.plannedProfitUsd, 17.5);
+    assert.equal(ord.plannedRR, 2.5);
 
-    // Price drops to $3.88 => +1.5R (+$12 / $8 risk) -> MUST emit R_TARGET_1_5 trigger
+    // Reject invalid SL direction for SHORT (SL below entry)
+    assert.throws(() => {
+      ledger.placePaperOrder({
+        marketId: 'NEAR-PERP',
+        symbol: 'NEAR',
+        side: 'SHORT',
+        marginUsd: 35,
+        leverage: 10,
+        price: 4.0,
+        stopLoss: 3.9,
+        takeProfit: 3.8,
+      });
+    }, /Stop Loss must be above entry/);
+
+    // Price drops to $3.88 => +$10.50 PnL / $7.00 risk = +1.5R -> emits R_TARGET_1_5
     const triggers = ledger.evaluateTriggers([{ symbol: 'NEAR', markPx: 3.88 }]);
     assert.ok(triggers.some((e) => e.kind === 'R_TARGET_1_5'));
 
-    // 1-tap Move Stop to Break-Even
+    // Move stop to Break-Even
     const bePos = ledger.moveStopToBreakEven(ord.id);
     assert.equal(bePos.stopLoss, 4.0);
     assert.equal(bePos.isBreakEven, true);
 
-    // 1-tap Take 50% profit at $3.88 (+$6 realized)
+    // Take 50% profit at $3.88 (+$5.25 realized)
     const partial = ledger.takePartialProfit(ord.id, 0.5, 3.88);
-    assert.equal(partial.realizedPnlUsd, 6);
+    assert.equal(partial.realizedPnlUsd, 5.25);
 
-    // If price bounces back to $4.00 BE stop -> auto closes remaining 50% at $0 extra loss (BREAK_EVEN)
+    // Price bounces back to $4.00 BE -> closes remaining 50% at $0 extra loss
     const stopEv = ledger.evaluateTriggers([{ symbol: 'NEAR', markPx: 4.0 }]);
     assert.ok(stopEv.some((e) => e.kind === 'STOP_HIT' && e.closed.reason === 'BREAK_EVEN'));
     const finalSnap = ledger.snapshot([{ symbol: 'NEAR', markPx: 4.0 }]);
     assert.equal(finalSnap.openCount, 0);
-    assert.equal(finalSnap.realizedPnlUsd, 6);
+    assert.equal(finalSnap.realizedPnlUsd, 5.25);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

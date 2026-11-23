@@ -12,7 +12,7 @@ test('Even Hub Store QA checks in bridge.ts and .gitignore', () => {
   assert.match(bridgeSrc, /shutDownPageContainer\(1\)/, 'Must use mode 1 root exit dialog');
   assert.match(bridgeSrc, /textContainerUpgrade/, 'Must use flicker-free textContainerUpgrade');
   assert.match(bridgeSrc, /case undefined:/, 'Must handle SDK CLICK_EVENT 0 -> undefined quirk');
-  assert.match(bridgeSrc, /AudioInputSource\.Glasses/, 'Must support G2 microphone capture');
+  assert.match(bridgeSrc, /updateImageRawData/, 'Must render real OHLC candlestick images');
 
   const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
   assert.match(gitignore, /^\.env$/m, '.env must be gitignored');

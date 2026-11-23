@@ -1,8 +1,12 @@
 import type { BackendState, CandleSeries, FeedMessage, MarketItem, PaperPosition, PriceAlert } from './api';
-import { buildMinimalHudPage, truncate, type G2PageSpec, type G2SparklineSpec } from './layout';
+import { buildMinimalHudPage, truncate, type G2CandleChartSpec, type G2ChartLevel, type G2PageSpec } from './layout';
 
-export type ViewName = 'GLANCE' | 'MANAGE' | 'ENTRY' | 'REPLY' | 'VOICE';
-export type Gesture = 'TAP' | 'DOUBLE_TAP' | 'SWIPE_UP' | 'SWIPE_DOWN' | 'LONG_PRESS_START' | 'LONG_PRESS_END';
+export type ViewName = 'GLANCE' | 'MANAGE' | 'TICKET_SIDE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_CONFIRM' | 'REPLY';
+export type Gesture = 'TAP' | 'DOUBLE_TAP' | 'SWIPE_UP' | 'SWIPE_DOWN';
+
+// Includes fine trader margin steps ($10..$500, including $35!) + custom value via /size or companion input
+export const MARGIN_PRESETS = [10, 15, 20, 25, 30, 35, 40, 50, 75, 100, 150, 250, 500];
+export const LEVERAGE_PRESETS = [1, 3, 5, 10, 20];
 
 export interface AppUIState {
   view: ViewName;
@@ -10,15 +14,16 @@ export interface AppUIState {
   marketIndex: number;
   posIndex: number;
   actionIndex: number;
-  orderSide: 'SHORT' | 'LONG';
-  orderStakeIndex: number;
+  // Interactive pre-trade order ticket
+  ticketSide: 'SHORT' | 'LONG';
+  ticketMarginUsd: number;
+  ticketLeverage: number;
+  ticketSlPct: number; // User-adjustable SL distance % from entry (moves live on candlesticks!)
+  ticketTpPct: number; // User-adjustable TP distance % from entry (moves live on candlesticks!)
   toast: string;
-  voiceCapturing: boolean;
   data: BackendState | null;
   candles: CandleSeries | null;
 }
-
-export const PAPER_NOTIONALS = [100, 250, 500];
 
 export function formatPx(px: number): string {
   if (px >= 1000) return `$${px.toLocaleString('en-US', { maximumFractionDigits: 1 })}`;
@@ -33,12 +38,39 @@ export function createInitialUIState(): AppUIState {
     marketIndex: 0,
     posIndex: 0,
     actionIndex: 0,
-    orderSide: 'SHORT',
-    orderStakeIndex: 1, // $250 default
+    ticketSide: 'SHORT',
+    ticketMarginUsd: 35,
+    ticketLeverage: 10,
+    ticketSlPct: 1.0,
+    ticketTpPct: 2.2,
     toast: '',
-    voiceCapturing: false,
     data: null,
     candles: null,
+  };
+}
+
+export function computeTicketMath(st: AppUIState, entryPx: number) {
+  const notionalUsd = st.ticketMarginUsd * st.ticketLeverage;
+  const qty = entryPx > 0 ? notionalUsd / entryPx : 0;
+  const slFrac = st.ticketSlPct / 100;
+  const tpFrac = st.ticketTpPct / 100;
+
+  const stopLoss = st.ticketSide === 'SHORT' ? entryPx * (1 + slFrac) : entryPx * (1 - slFrac);
+  const takeProfit = st.ticketSide === 'SHORT' ? entryPx * (1 - tpFrac) : entryPx * (1 + tpFrac);
+
+  const lossUsd = Math.abs(entryPx - stopLoss) * qty;
+  const profitUsd = Math.abs(takeProfit - entryPx) * qty;
+  const rr = lossUsd > 0 ? profitUsd / lossUsd : 0;
+
+  return {
+    entryPx,
+    notionalUsd,
+    qty,
+    stopLoss,
+    takeProfit,
+    lossUsd: Number(lossUsd.toFixed(2)),
+    profitUsd: Number(profitUsd.toFixed(2)),
+    rr: Number(rr.toFixed(2)),
   };
 }
 
@@ -85,10 +117,10 @@ export interface HudAction {
     | 'MOVE_BE'
     | 'TAKE_HALF'
     | 'CLOSE_POS'
-    | 'OPEN_SHORT'
-    | 'OPEN_LONG'
+    | 'START_SHORT'
+    | 'START_LONG'
     | 'DISMISS_ALERT'
-    | 'GO_ENTRY'
+    | 'GO_TICKET'
     | 'GO_MANAGE'
     | 'GO_REPLY'
     | 'SEND_TG_REPLY';
@@ -99,7 +131,7 @@ export function getManageActions(st: AppUIState): HudAction[] {
   const pos = getActivePosition(st);
   if (!pos) {
     return [
-      { label: 'New paper setup', kind: 'GO_ENTRY' },
+      { label: 'New setup', kind: 'GO_TICKET' },
       { label: 'Reply in Telegram', kind: 'GO_REPLY' },
     ];
   }
@@ -111,17 +143,16 @@ export function getManageActions(st: AppUIState): HudAction[] {
       label: pos.isBreakEven ? `Stop at BE (${formatPx(pos.entryPrice)})` : `Move stop to BE (${formatPx(pos.entryPrice)})`,
       kind: 'MOVE_BE',
     },
-    { label: `Take 50% (${hSign}$${halfPnl.toFixed(1)})`, kind: 'TAKE_HALF' },
-    { label: `Close all (${fSign}$${pos.unrealizedPnlUsd.toFixed(1)})`, kind: 'CLOSE_POS' },
-    { label: 'New setup / Reply', kind: 'GO_ENTRY' },
+    { label: `Take 50% (${hSign}$${halfPnl.toFixed(2)})`, kind: 'TAKE_HALF' },
+    { label: `Close all (${fSign}$${pos.unrealizedPnlUsd.toFixed(2)})`, kind: 'CLOSE_POS' },
+    { label: 'New trade setup', kind: 'GO_TICKET' },
   ];
 }
 
-export function getAlertActions(st: AppUIState): HudAction[] {
-  const notional = PAPER_NOTIONALS[st.orderStakeIndex % PAPER_NOTIONALS.length];
+export function getAlertActions(): HudAction[] {
   return [
-    { label: `Short $${notional} · SL +1.5% · TP 2R`, kind: 'OPEN_SHORT' },
-    { label: `Long  $${notional} · SL -1.5% · TP 2R`, kind: 'OPEN_LONG' },
+    { label: 'Short (set SL & TP)', kind: 'START_SHORT' },
+    { label: 'Long (set SL & TP)', kind: 'START_LONG' },
     { label: 'Dismiss alert', kind: 'DISMISS_ALERT' },
   ];
 }
@@ -129,13 +160,13 @@ export function getAlertActions(st: AppUIState): HudAction[] {
 export function getReplyActions(st: AppUIState): HudAction[] {
   const msg = getActiveFeedMessage(st);
   const smart = msg?.smartReplies || [
-    'Seeing the move, checking level',
-    'In a lecture, managing on glasses',
-    'Stop moved to BE, will update',
+    'Checking 15m candles now',
+    'In a session, watching on glasses',
+    'Stop moved to BE',
   ];
   return [
+    { label: 'Set up trade (SL / TP)', kind: 'GO_TICKET' as const },
     ...smart.map((label) => ({ label, kind: 'SEND_TG_REPLY' as const, payload: label })),
-    { label: 'Open paper trade', kind: 'GO_ENTRY' as const },
     { label: 'Manage open position', kind: 'GO_MANAGE' as const },
   ];
 }
@@ -148,16 +179,14 @@ function fmtAge(ts: number): string {
   return `${Math.floor(min / 60)}h`;
 }
 
-function buildSparkline(st: AppUIState, mkt: MarketItem | null, refLevel?: number, refLabel?: string): G2SparklineSpec | null {
+function buildChart(st: AppUIState, mkt: MarketItem | null, levels?: G2ChartLevel[]): G2CandleChartSpec | null {
   const candles = st.candles || st.data?.candles || null;
-  if (!mkt || !candles || candles.symbol !== mkt.symbol || candles.closes.length < 2) return null;
+  if (!mkt || !candles || candles.symbol !== mkt.symbol || !candles.bars || candles.bars.length < 2) return null;
   return {
     symbol: mkt.symbol,
     interval: candles.interval || '15m',
-    closes: candles.closes,
-    change24hPct: mkt.change24hPct,
-    refLevel,
-    refLabel,
+    bars: candles.bars,
+    levels,
   };
 }
 
@@ -167,43 +196,26 @@ export function renderPage(st: AppUIState): G2PageSpec {
   const alert = getActiveTriggeredAlert(st);
   const mkt = getActiveMarket(st);
 
-  if (st.view === 'VOICE') {
-    const msg = getActiveFeedMessage(st);
-    return buildMinimalHudPage({
-      view: 'VOICE',
-      eyebrow: 'voice reply · listening',
-      main: [
-        '● Listening...',
-        '',
-        msg ? `To ${msg.sender}` : 'To Telegram group',
-        'Release when finished.',
-      ].join('\n'),
-      hint: 'release send · dbl cancel',
-    });
-  }
-
-  // Root GLANCE view: automatically shows the ONE urgent thing right now
+  // 1. ROOT GLANCE
   if (st.view === 'GLANCE') {
-    // Priority 1: Active triggered price alert (structure check -> 1-tap short/long)
     if (alert && mkt) {
-      const actions = getAlertActions(st);
+      const actions = getAlertActions();
       const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
       const sign = mkt.change24hPct >= 0 ? '+' : '';
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()}-perp · paper`,
+        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()}`,
         main: [
-          `${mkt.symbol}  ${formatPx(mkt.markPx)}  ${sign}${mkt.change24hPct}%`,
-          alert.note ? truncate(alert.note, 34) : `crossed ${formatPx(alert.targetPrice)}`,
+          `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%`,
+          alert.note ? truncate(alert.note, 28) : `level ${formatPx(alert.targetPrice)}`,
           '',
           ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
         ].join('\n'),
-        hint: 'swipe pick · tap execute · dbl exit',
-        sparkline: buildSparkline(st, mkt, alert.targetPrice, 'alert'),
+        hint: 'swipe pick · tap open · dbl exit',
+        chart: buildChart(st, mkt, [{ price: alert.targetPrice, label: 'ALRT', emphasized: true }]),
       });
     }
 
-    // Priority 2: Open position reached >= 1.5R (Break-Even prompt!)
     if (pos && pos.currentR >= 1.5 && !pos.isBreakEven) {
       const actions = getManageActions(st).slice(0, 3);
       const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
@@ -212,106 +224,191 @@ export function renderPage(st: AppUIState): G2PageSpec {
         view: 'GLANCE',
         eyebrow: `1.5R reached · ${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()}`,
         main: [
-          `${pos.symbol} ${pos.side}   +${pos.currentR}R`,
-          `${formatPx(pos.markPx)}  (in ${formatPx(pos.entryPrice)})`,
+          `${pos.symbol} ${pos.side} +${pos.currentR}R`,
+          `${formatPx(pos.markPx)} (in ${formatPx(pos.entryPrice)})`,
           '',
           ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
         ].join('\n'),
         hint: 'swipe pick · tap act · dbl exit',
-        sparkline: buildSparkline(st, posMkt, pos.entryPrice, 'entry'),
+        chart: buildChart(st, posMkt, [
+          { price: pos.entryPrice, label: 'IN', emphasized: true },
+          { price: pos.stopLoss, label: 'SL', emphasized: false },
+        ]),
       });
     }
 
-    // Priority 3: Clean Telegram glance paired with live perp + structure curve
     const msg = getActiveFeedMessage(st);
     if (msg) {
       const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
       const posLine = pos
         ? `${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R${pos.isBreakEven ? ' (BE)' : ''}`
         : mkt
-          ? `${mkt.symbol}  ${formatPx(mkt.markPx)}  ${sign}${mkt.change24hPct}%`
+          ? `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%`
           : '';
+      const chartLevels: G2ChartLevel[] | undefined =
+        pos && pos.symbol === mkt?.symbol
+          ? [
+              { price: pos.entryPrice, label: 'IN' },
+              { price: pos.stopLoss, label: pos.isBreakEven ? 'BE' : 'SL', emphasized: true },
+            ]
+          : undefined;
+
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `${truncate(msg.sender, 20)} · ${fmtAge(msg.timestamp)}${st.toast ? ` · ${st.toast}` : ''}`,
+        eyebrow: `${truncate(msg.sender, 18)} · ${fmtAge(msg.timestamp)}${st.toast ? ` · ${st.toast}` : ''}`,
         main: [
-          truncate(msg.text, 88),
+          truncate(msg.text, 70),
           '',
           posLine,
-          pos ? '› Tap to manage position' : '› Tap to reply or trade',
+          pos ? '› Tap to manage' : '› Tap to trade / reply',
         ]
           .filter(Boolean)
           .join('\n'),
-        hint: 'tap act · swipe next · hold voice · dbl exit',
-        sparkline: buildSparkline(st, mkt, pos && pos.symbol === mkt?.symbol ? pos.stopLoss : undefined, pos?.isBreakEven ? 'BE' : 'SL'),
+        hint: 'tap open · swipe next · dbl exit',
+        chart: buildChart(st, mkt, chartLevels),
       });
     }
 
-    // Fallback when no Telegram messages yet: clean perp glance
     const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
     return buildMinimalHudPage({
       view: 'GLANCE',
-      eyebrow: `glancedesk · ${mkt ? mkt.symbol.toLowerCase() : 'ready'} · paper`,
+      eyebrow: `glancedesk · ${mkt ? mkt.symbol.toLowerCase() : 'ready'}`,
       main: [
-        mkt ? `${mkt.symbol}  ${formatPx(mkt.markPx)}  ${sign}${mkt.change24hPct}%` : 'Connecting to Hyperliquid...',
-        st.toast || 'Send /alert NEAR 4.20 in Telegram',
+        mkt ? `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%` : 'Connecting...',
+        st.toast || 'Send /size 35 or /alert NEAR 4.20',
         '',
-        pos ? `Open: ${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '› Tap to open paper setup',
+        pos ? `Open: ${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '› Tap to set up trade',
       ].join('\n'),
-      hint: 'tap trade · swipe coin · dbl exit',
-      sparkline: buildSparkline(st, mkt),
+      hint: 'tap setup · swipe coin · dbl exit',
+      chart: buildChart(st, mkt),
     });
   }
 
+  // 2. STEP 1/4 — SIDE & MARGIN SIZE ($35 or any custom amount)
+  if (st.view === 'TICKET_SIDE') {
+    const px = mkt?.markPx || 0;
+    const notional = st.ticketMarginUsd * st.ticketLeverage;
+    return buildMinimalHudPage({
+      view: 'TICKET_SIDE',
+      eyebrow: `1/4 size · ${mkt?.symbol.toLowerCase() || 'perp'} · ${st.ticketLeverage}x`,
+      main: [
+        `${mkt?.symbol || 'PERP'} ${formatPx(px)}`,
+        '',
+        `› ${st.ticketSide}  $${st.ticketMarginUsd} margin`,
+        `  Size $${notional} (${st.ticketLeverage}x)`,
+        `  Tap to place Stop Loss`,
+      ].join('\n'),
+      hint: 'up flip side · dn size · tap next',
+      chart: buildChart(st, mkt, px > 0 ? [{ price: px, label: 'NOW' }] : undefined),
+    });
+  }
+
+  // 3. STEP 2/4 — INTERACTIVE STOP LOSS ON LIVE CANDLESTICKS (SHOWS EXACT $ LOSS)
+  if (st.view === 'TICKET_SL') {
+    const px = mkt?.markPx || 0;
+    const calc = computeTicketMath(st, px);
+    return buildMinimalHudPage({
+      view: 'TICKET_SL',
+      eyebrow: `2/4 stop loss · ${mkt?.symbol.toLowerCase() || 'perp'} ${st.ticketSide.toLowerCase()}`,
+      main: [
+        `Entry ${formatPx(px)}`,
+        `› SL ${formatPx(calc.stopLoss)} (${st.ticketSlPct.toFixed(2)}%)`,
+        '',
+        `Risk -$${calc.lossUsd.toFixed(2)}`,
+        `($${st.ticketMarginUsd} × ${st.ticketLeverage}x)`,
+      ].join('\n'),
+      hint: 'swipe move SL · tap set TP · dbl back',
+      chart: buildChart(st, mkt, [
+        { price: px, label: 'IN', emphasized: false },
+        { price: calc.stopLoss, label: 'SL', emphasized: true },
+      ]),
+    });
+  }
+
+  // 4. STEP 3/4 — INTERACTIVE TAKE PROFIT ON LIVE CANDLESTICKS (SHOWS EXACT $ GAIN & R:R)
+  if (st.view === 'TICKET_TP') {
+    const px = mkt?.markPx || 0;
+    const calc = computeTicketMath(st, px);
+    return buildMinimalHudPage({
+      view: 'TICKET_TP',
+      eyebrow: `3/4 take profit · ${mkt?.symbol.toLowerCase() || 'perp'} ${st.ticketSide.toLowerCase()}`,
+      main: [
+        `SL ${formatPx(calc.stopLoss)} (-$${calc.lossUsd.toFixed(2)})`,
+        `› TP ${formatPx(calc.takeProfit)} (${st.ticketTpPct.toFixed(2)}%)`,
+        '',
+        `Gain +$${calc.profitUsd.toFixed(2)}`,
+        `Reward ${calc.rr}R`,
+      ].join('\n'),
+      hint: 'swipe move TP · tap review · dbl back',
+      chart: buildChart(st, mkt, [
+        { price: calc.stopLoss, label: 'SL', emphasized: false },
+        { price: px, label: 'IN', emphasized: false },
+        { price: calc.takeProfit, label: 'TP', emphasized: true },
+      ]),
+    });
+  }
+
+  // 5. STEP 4/4 — FINAL CONFIRMATION WITH FULL RISK / REWARD PROOF
+  if (st.view === 'TICKET_CONFIRM') {
+    const px = mkt?.markPx || 0;
+    const calc = computeTicketMath(st, px);
+    return buildMinimalHudPage({
+      view: 'TICKET_CONFIRM',
+      eyebrow: `4/4 confirm paper · ${st.ticketMarginUsd}$ × ${st.ticketLeverage}x`,
+      main: [
+        `${mkt?.symbol || 'PERP'} ${st.ticketSide} @ ${formatPx(px)}`,
+        `SL ${formatPx(calc.stopLoss)} (-$${calc.lossUsd.toFixed(2)})`,
+        `TP ${formatPx(calc.takeProfit)} (+$${calc.profitUsd.toFixed(2)})`,
+        `R:R ${calc.rr}R`,
+        '› Tap to execute paper',
+      ].join('\n'),
+      hint: 'tap confirm · dbl edit TP',
+      chart: buildChart(st, mkt, [
+        { price: calc.stopLoss, label: 'SL', emphasized: true },
+        { price: px, label: 'IN', emphasized: false },
+        { price: calc.takeProfit, label: 'TP', emphasized: true },
+      ]),
+    });
+  }
+
+  // 6. MANAGE OPEN POSITION
   if (st.view === 'MANAGE') {
     const actions = getManageActions(st);
     const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
     const posMkt = pos ? st.data?.markets.find((m) => m.symbol === pos.symbol) || mkt : mkt;
     const rStr = pos ? `${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '';
+    const levels: G2ChartLevel[] | undefined = pos
+      ? [
+          { price: pos.entryPrice, label: 'IN' },
+          { price: pos.stopLoss, label: pos.isBreakEven ? 'BE' : 'SL', emphasized: true },
+          { price: pos.takeProfit, label: 'TP' },
+        ]
+      : undefined;
+
     return buildMinimalHudPage({
       view: 'MANAGE',
       eyebrow: pos
-        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} · sl ${formatPx(pos.stopLoss)}${pos.isBreakEven ? ' (be)' : ''}`
+        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} · $${pos.marginUsd}×${pos.leverage}`
         : 'positions · none open',
       main: [
-        pos ? `${pos.symbol} ${pos.side}   ${rStr}` : 'No open paper positions',
-        pos ? `${formatPx(pos.markPx)}  (in ${formatPx(pos.entryPrice)})` : `Cash $${(port?.cashUsd ?? 10000).toFixed(0)}`,
+        pos ? `${pos.symbol} ${pos.side} ${rStr}` : 'No open paper positions',
+        pos ? `${formatPx(pos.markPx)} (SL ${formatPx(pos.stopLoss)})` : `Cash $${(port?.cashUsd ?? 10000).toFixed(0)}`,
         '',
         ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
       ].join('\n'),
-      hint: 'swipe pick · tap confirm · dbl back',
-      sparkline: buildSparkline(st, posMkt, pos?.stopLoss, pos?.isBreakEven ? 'BE' : 'SL'),
+      hint: 'swipe pick · tap act · dbl back',
+      chart: buildChart(st, posMkt, levels),
     });
   }
 
-  if (st.view === 'ENTRY') {
-    const notional = PAPER_NOTIONALS[st.orderStakeIndex % PAPER_NOTIONALS.length];
-    const px = mkt?.markPx || 0;
-    const slPx = st.orderSide === 'SHORT' ? px * 1.015 : px * 0.985;
-    const tpPx = st.orderSide === 'SHORT' ? px * 0.97 : px * 1.03;
-    const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
-    return buildMinimalHudPage({
-      view: 'ENTRY',
-      eyebrow: `paper setup · ${mkt ? mkt.symbol.toLowerCase() : 'perp'} · 2R auto`,
-      main: [
-        mkt ? `${mkt.symbol}  ${formatPx(px)}  ${sign}${mkt.change24hPct}%` : 'Loading mark...',
-        '',
-        `› ${st.orderSide} $${notional} (paper)`,
-        `  SL ${formatPx(slPx)} · TP ${formatPx(tpPx)}`,
-      ].join('\n'),
-      hint: 'swipe flip side/size · tap enter · dbl back',
-      sparkline: buildSparkline(st, mkt, slPx, 'SL'),
-    });
-  }
-
-  // REPLY view
+  // 7. REPLY / QUICK ACTIONS
   const msg = getActiveFeedMessage(st);
   const actions = getReplyActions(st);
   const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
   return buildMinimalHudPage({
     view: 'REPLY',
-    eyebrow: msg ? `reply to ${truncate(msg.sender, 24)}` : 'quick actions',
-    main: actions.map((a, i) => `${i === sel ? '› ' : '  '}${truncate(a.label, 42)}`).join('\n'),
-    hint: 'swipe pick · tap send · dbl back',
+    eyebrow: msg ? `reply · ${truncate(msg.sender, 22)}` : 'actions',
+    main: actions.map((a, i) => `${i === sel ? '› ' : '  '}${truncate(a.label, 38)}`).join('\n'),
+    hint: 'swipe pick · tap go · dbl back',
   });
 }

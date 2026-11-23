@@ -1,11 +1,5 @@
+import { drawCandlestickChart } from './candles';
 import { G2_HEIGHT, G2_WIDTH, type G2PageSpec } from './layout';
-import { drawSparklineOnCanvas } from './sparkline';
-
-function level15ToGreen(level: number): string {
-  const clamped = Math.max(0, Math.min(15, Math.round(level)));
-  const g = Math.round((clamped / 15) * 255);
-  return `rgb(${Math.round(g * 0.16)}, ${g}, ${Math.round(g * 0.4)})`;
-}
 
 function textBrightness4ToGreen(level: number): string {
   const map = [55, 110, 165, 215, 255];
@@ -44,16 +38,9 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
   canvas.height = G2_HEIGHT;
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, G2_WIDTH, G2_HEIGHT);
-
   ctx.textBaseline = 'top';
 
   for (const c of page.textObject) {
-    if (c.borderWidth > 0) {
-      ctx.strokeStyle = level15ToGreen(c.borderColor);
-      ctx.lineWidth = c.borderWidth;
-      ctx.strokeRect(c.xPosition + 1, c.yPosition + 1, c.width - 2, c.height - 2);
-    }
-
     ctx.font =
       c.containerName === 'eyebrow' || c.containerName === 'hint'
         ? '13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
@@ -61,30 +48,24 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(
-      c.xPosition + c.paddingLength,
-      c.yPosition + c.paddingLength,
-      c.width - c.paddingLength * 2,
-      c.height - c.paddingLength * 2
-    );
+    ctx.rect(c.xPosition, c.yPosition, c.width, c.height);
     ctx.clip();
 
     ctx.fillStyle = textBrightness4ToGreen(c.textColor);
-    const maxW = Math.max(20, c.width - c.paddingLength * 2);
-    const lines = wrapText(ctx, c.content, maxW);
-    let y = c.yPosition + c.paddingLength;
+    const lines = wrapText(ctx, c.content, Math.max(20, c.width));
+    let y = c.yPosition;
     const step = c.containerName === 'main' ? 24 : 18;
     for (const ln of lines) {
-      if (y > c.yPosition + c.height - 8) break;
-      ctx.fillText(ln, c.xPosition + c.paddingLength, y);
+      if (y > c.yPosition + c.height - 6) break;
+      ctx.fillText(ln, c.xPosition, y);
       y += step;
     }
     ctx.restore();
   }
 
   for (const img of page.imageObject || []) {
-    if (img.sparkline) {
-      drawSparklineOnCanvas(ctx, img.xPosition, img.yPosition, img.width, img.height, img.sparkline, true);
+    if (img.chart) {
+      drawCandlestickChart(ctx, img.xPosition, img.yPosition, img.width, img.height, img.chart, true);
     }
   }
 }

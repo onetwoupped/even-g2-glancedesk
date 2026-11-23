@@ -1,3 +1,5 @@
+import type { CandleBar } from './api';
+
 export const G2_WIDTH = 576;
 export const G2_HEIGHT = 288;
 export const MAX_TEXT_CONTAINERS = 8;
@@ -23,13 +25,17 @@ export interface G2TextContainerSpec {
   content: string;
 }
 
-export interface G2SparklineSpec {
+export interface G2ChartLevel {
+  price: number;
+  label: string;
+  emphasized?: boolean;
+}
+
+export interface G2CandleChartSpec {
   symbol: string;
   interval: string;
-  closes: number[];
-  change24hPct: number;
-  refLevel?: number; // Entry price, alert level, or SL level
-  refLabel?: string;
+  bars: CandleBar[];
+  levels?: G2ChartLevel[];
 }
 
 export interface G2ImageContainerSpec {
@@ -39,11 +45,11 @@ export interface G2ImageContainerSpec {
   yPosition: number;
   width: number;
   height: number;
-  sparkline?: G2SparklineSpec;
+  chart?: G2CandleChartSpec;
 }
 
 export interface G2PageSpec {
-  view: 'GLANCE' | 'MANAGE' | 'ENTRY' | 'REPLY' | 'VOICE';
+  view: 'GLANCE' | 'MANAGE' | 'TICKET_SIDE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_CONFIRM' | 'REPLY';
   containerTotalNum: number;
   textObject: G2TextContainerSpec[];
   imageObject?: G2ImageContainerSpec[];
@@ -56,42 +62,42 @@ export function truncate(text: string, maxLen: number): string {
 }
 
 /**
- * Borderless AR HUD layout:
- * - Black = 100% transparent glass on Even G2 waveguide optics.
- * - Zero box borders (borderWidth: 0) so the user's real-world vision stays open.
- * - Calm brightness hierarchy: 4 (focus), 2 (secondary), 1 (whisper metadata).
+ * Calibrated against real Even Hub G2 Simulator LVGL metrics:
+ * - eyebrow & hint use height=34 so single-line LVGL text NEVER triggers right-edge scrollbar ticks.
+ * - borderWidth=0 keeps ~75% of the lens pure black (= 100% transparent glass).
+ * - chart container is 220x142 (inside 288x144 hardware limit), crisp 20-bar OHLC candlesticks.
  */
 export function buildMinimalHudPage(params: {
   view: G2PageSpec['view'];
   eyebrow: string;
   main: string;
   hint: string;
-  sparkline?: G2SparklineSpec | null;
+  chart?: G2CandleChartSpec | null;
 }): G2PageSpec {
-  const hasChart = Boolean(params.sparkline && params.sparkline.closes.length >= 2);
-  const mainWidth = hasChart ? 348 : 544;
+  const hasChart = Boolean(params.chart && params.chart.bars.length >= 2);
+  const mainWidth = hasChart ? 318 : 544;
 
   const textObject: G2TextContainerSpec[] = [
     {
       containerID: 1,
       containerName: 'eyebrow',
       xPosition: 16,
-      yPosition: 12,
+      yPosition: 6,
       width: 544,
-      height: 26,
+      height: 34,
       borderWidth: 0,
       borderColor: 0,
       borderRadius: 0,
       paddingLength: 0,
       textColor: 1,
       isEventCapture: 0,
-      content: truncate(params.eyebrow, 64),
+      content: truncate(params.eyebrow, 46),
     },
     {
       containerID: 2,
       containerName: 'main',
       xPosition: 16,
-      yPosition: 48,
+      yPosition: 46,
       width: mainWidth,
       height: 196,
       borderWidth: 0,
@@ -106,16 +112,16 @@ export function buildMinimalHudPage(params: {
       containerID: 3,
       containerName: 'hint',
       xPosition: 16,
-      yPosition: 254,
+      yPosition: 250,
       width: 544,
-      height: 24,
+      height: 34,
       borderWidth: 0,
       borderColor: 0,
       borderRadius: 0,
       paddingLength: 0,
       textColor: 1,
       isEventCapture: 0,
-      content: truncate(params.hint, 80),
+      content: truncate(params.hint, 48),
     },
   ];
 
@@ -124,11 +130,11 @@ export function buildMinimalHudPage(params: {
         {
           containerID: 4,
           containerName: 'chart',
-          xPosition: 374,
-          yPosition: 56,
-          width: 186,
-          height: 126,
-          sparkline: params.sparkline!,
+          xPosition: 344,
+          yPosition: 52,
+          width: 220,
+          height: 142,
+          chart: params.chart!,
         },
       ]
     : undefined;

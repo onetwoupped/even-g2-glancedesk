@@ -103,14 +103,14 @@ export class HyperliquidClient {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'GlanceDesk-EvenG2/3.0',
+          'User-Agent': 'GlanceDesk-EvenG2/4.0',
         },
         body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
         signal: AbortSignal.timeout(10000),
       });
       if (!resp.ok) throw new Error(`Hyperliquid HTTP ${resp.status}`);
       const data = await resp.json();
-      const normalized = normalizeHyperliquidMarkets(data); // Keep ALL 150+ perps (SOL, ETH, NEAR, BTC, etc.)
+      const normalized = normalizeHyperliquidMarkets(data);
       if (normalized.length > 0) {
         this.cache = normalized;
         this.fetchedAt = now;
@@ -123,23 +123,32 @@ export class HyperliquidClient {
     }
   }
 
+  /**
+   * Fetch live OHLC candlestick bars (open, high, low, close, timestamp) from Hyperliquid.
+   */
   async getStructureCandles(symbol, interval = '15m') {
     const coin = String(symbol || 'BTC').replace(/-PERP$/i, '').toUpperCase();
     const cacheKey = `${coin}:${interval}`;
     const now = Date.now();
     const existing = this.candleCache.get(cacheKey);
-    if (existing && now - existing.fetchedAt < 45000) {
+    if (existing && now - existing.fetchedAt < 30000) {
       return existing;
     }
 
-    const lookbackMs = interval === '15m' ? 8 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+    const lookbackMs =
+      interval === '5m'
+        ? 2.5 * 60 * 60 * 1000
+        : interval === '15m'
+          ? 7 * 60 * 60 * 1000
+          : 24 * 60 * 60 * 1000;
+
     try {
       const resp = await fetch(HL_INFO_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'GlanceDesk-EvenG2/3.0',
+          'User-Agent': 'GlanceDesk-EvenG2/4.0',
         },
         body: JSON.stringify({
           type: 'candleSnapshot',
@@ -149,17 +158,25 @@ export class HyperliquidClient {
       });
       if (!resp.ok) throw new Error(`Hyperliquid candles HTTP ${resp.status}`);
       const raw = await resp.json();
-      const closes = (Array.isArray(raw) ? raw : [])
-        .map((c) => Number(c.c))
-        .filter((n) => Number.isFinite(n) && n > 0);
-      if (closes.length >= 2) {
+      const bars = (Array.isArray(raw) ? raw : [])
+        .map((c) => ({
+          t: Number(c.t),
+          o: Number(c.o),
+          h: Number(c.h),
+          l: Number(c.l),
+          c: Number(c.c),
+        }))
+        .filter((b) => b.o > 0 && b.h > 0 && b.l > 0 && b.c > 0)
+        .slice(-22);
+
+      if (bars.length >= 2) {
         const entry = {
           symbol: coin,
           interval,
           fetchedAt: now,
-          closes,
-          high: Math.max(...closes),
-          low: Math.min(...closes),
+          bars,
+          high: Math.max(...bars.map((b) => b.h)),
+          low: Math.min(...bars.map((b) => b.l)),
         };
         this.candleCache.set(cacheKey, entry);
         return entry;
@@ -167,6 +184,6 @@ export class HyperliquidClient {
     } catch {
       // Fallback to cached
     }
-    return existing || { symbol: coin, interval, fetchedAt: 0, closes: [], high: 0, low: 0 };
+    return existing || { symbol: coin, interval, fetchedAt: 0, bars: [], high: 0, low: 0 };
   }
 }

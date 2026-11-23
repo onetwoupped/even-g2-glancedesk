@@ -1,5 +1,4 @@
 import {
-  AudioInputSource,
   CreateStartUpPageContainer,
   ImageContainerProperty,
   ImageRawDataUpdate,
@@ -14,16 +13,14 @@ import {
   type EvenAppBridge,
   type EvenHubEvent,
 } from '@evenrealities/even_hub_sdk';
+import { renderCandlestickPngBytes } from './candles';
 import type { G2PageSpec } from './layout';
-import { renderSparklinePngBytes } from './sparkline';
 import type { Gesture } from './state';
 
 export interface GlassesHost {
   mode: 'EVEN_G2_SDK' | 'BROWSER_PREVIEW';
   render(page: G2PageSpec, forceRebuild?: boolean): Promise<void>;
   exitRoot(): Promise<void>;
-  startMic(onPcmChunk: (chunk: Uint8Array) => void): Promise<void>;
-  stopMic(): Promise<void>;
   onGesture(handler: (g: Gesture) => void): void;
   onMenuSelect(handler: (itemID: number) => void): void;
 }
@@ -39,10 +36,6 @@ function mapOsEventToGesture(eventType: number | undefined): Gesture | null {
       return 'SWIPE_UP';
     case OsEventTypeList.SCROLL_BOTTOM_EVENT:
       return 'SWIPE_DOWN';
-    case OsEventTypeList.LONG_PRESS_EVENT:
-      return 'LONG_PRESS_START';
-    case OsEventTypeList.LONG_PRESS_RELEASE_EVENT:
-      return 'LONG_PRESS_END';
     default:
       return null;
   }
@@ -59,9 +52,9 @@ function buildContextMenu(): MenuContainerProperty {
   return new MenuContainerProperty({
     menuItems: [
       new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
-      new MenuItemProperty({ itemID: 2, itemName: 'Manage Position' }),
-      new MenuItemProperty({ itemID: 3, itemName: 'New Setup' }),
-      new MenuItemProperty({ itemID: 4, itemName: 'Refresh Live' }),
+      new MenuItemProperty({ itemID: 2, itemName: 'New Trade (SL/TP)' }),
+      new MenuItemProperty({ itemID: 3, itemName: 'Manage Position' }),
+      new MenuItemProperty({ itemID: 4, itemName: 'Cycle Leverage' }),
     ],
   });
 }
@@ -71,7 +64,7 @@ export async function connectEvenBridge(
   onLog: (msg: string) => void
 ): Promise<GlassesHost> {
   if (!isEvenWebView()) {
-    onLog('Running in Browser 576x288 Preview Mode (use npm run sim for official Even Hub Simulator).');
+    onLog('Browser 576x288 Preview Mode (use npm run sim for official Even Hub Simulator).');
     let gestureCb: ((g: Gesture) => void) | null = null;
     let menuCb: ((id: number) => void) | null = null;
     return {
@@ -82,10 +75,6 @@ export async function connectEvenBridge(
       async exitRoot() {
         onLog('QA Check: shutDownPageContainer(1) called on root screen.');
       },
-      async startMic(onPcmChunk) {
-        onPcmChunk(new Uint8Array(16000));
-      },
-      async stopMic() {},
       onGesture(handler) {
         gestureCb = handler;
         (window as unknown as { __g2Emit?: (g: Gesture) => void }).__g2Emit = (g) => gestureCb?.(g);
@@ -103,30 +92,17 @@ export async function connectEvenBridge(
   let initialized = false;
   let lastView: string | null = null;
   let lastHasImage = false;
-  let lastSparkKey = '';
+  let lastChartKey = '';
   let imageSending = false;
+  let pendingPage: G2PageSpec | null = null;
   let gestureHandler: ((g: Gesture) => void) | null = null;
   let menuHandler: ((id: number) => void) | null = null;
-  let pcmHandler: ((chunk: Uint8Array) => void) | null = null;
 
   bridge.onEvenHubEvent((event: EvenHubEvent) => {
-    if (event.audioEvent?.audioPcm && pcmHandler) {
-      pcmHandler(event.audioEvent.audioPcm);
-      return;
-    }
-
     const menuEv = (event as unknown as { menuItemClickEvent?: { itemID?: number } }).menuItemClickEvent;
     if (menuEv?.itemID) {
       menuHandler?.(menuEv.itemID);
       return;
-    }
-
-    if (event.sysEvent) {
-      const sysGesture = mapOsEventToGesture(event.sysEvent.eventType);
-      if (sysGesture === 'LONG_PRESS_START' || sysGesture === 'LONG_PRESS_END') {
-        gestureHandler?.(sysGesture);
-        return;
-      }
     }
 
     if (event.textEvent) {
@@ -174,15 +150,21 @@ export async function connectEvenBridge(
     );
   }
 
-  async function pushSparklineImages(page: G2PageSpec, force = false): Promise<void> {
-    if (!page.imageObject || page.imageObject.length === 0 || imageSending) return;
+  async function pushCandlestickImages(page: G2PageSpec, force = false): Promise<void> {
+    if (!page.imageObject || page.imageObject.length === 0) return;
+    if (imageSending) {
+      // Coalesce rapid SL/TP swipes so latest line position always lands cleanly
+      pendingPage = page;
+      return;
+    }
     for (const img of page.imageObject) {
-      if (!img.sparkline || img.sparkline.closes.length < 2) continue;
-      const key = `${img.sparkline.symbol}:${img.sparkline.refLevel ?? ''}:${img.sparkline.closes.slice(-3).join(',')}`;
-      if (!force && key === lastSparkKey) continue;
+      if (!img.chart || img.chart.bars.length < 2) continue;
+      const lvlKey = (img.chart.levels || []).map((l) => `${l.label}:${l.price.toFixed(4)}:${l.emphasized ? 1 : 0}`).join('|');
+      const key = `${img.chart.symbol}:${img.chart.bars.slice(-1)[0].c}:${lvlKey}`;
+      if (!force && key === lastChartKey) continue;
       imageSending = true;
       try {
-        const pngBytes = await renderSparklinePngBytes(img.width, img.height, img.sparkline);
+        const pngBytes = await renderCandlestickPngBytes(img.width, img.height, img.chart);
         if (pngBytes.length > 0) {
           await bridge.updateImageRawData(
             new ImageRawDataUpdate({
@@ -191,11 +173,16 @@ export async function connectEvenBridge(
               imageData: pngBytes,
             })
           );
-          lastSparkKey = key;
+          lastChartKey = key;
         }
       } finally {
         imageSending = false;
       }
+    }
+    if (pendingPage) {
+      const next = pendingPage;
+      pendingPage = null;
+      await pushCandlestickImages(next, false);
     }
   }
 
@@ -223,7 +210,7 @@ export async function connectEvenBridge(
         lastView = page.view;
         lastHasImage = hasImage;
         onLog(`createStartUpPageContainer -> code ${res}`);
-        await pushSparklineImages(page, true);
+        await pushCandlestickImages(page, true);
         return;
       }
 
@@ -240,25 +227,17 @@ export async function connectEvenBridge(
             })
           );
         }
-        await pushSparklineImages(page, false);
+        await pushCandlestickImages(page, false);
         return;
       }
 
       await bridge.rebuildPageContainer(new RebuildPageContainer(payloadShape));
       lastView = page.view;
       lastHasImage = hasImage;
-      await pushSparklineImages(page, true);
+      await pushCandlestickImages(page, true);
     },
     async exitRoot() {
       await bridge.shutDownPageContainer(1);
-    },
-    async startMic(onPcmChunk) {
-      pcmHandler = onPcmChunk;
-      await bridge.audioControl(true, AudioInputSource.Glasses);
-    },
-    async stopMic() {
-      pcmHandler = null;
-      await bridge.audioControl(false, AudioInputSource.Glasses);
     },
     onGesture(handler) {
       gestureHandler = handler;

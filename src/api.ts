@@ -9,11 +9,19 @@ export interface MarketItem {
   maxLeverage: number;
 }
 
+export interface CandleBar {
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+}
+
 export interface CandleSeries {
   symbol: string;
-  interval?: string;
+  interval: string;
   fetchedAt: number;
-  closes: number[];
+  bars: CandleBar[];
   high: number;
   low: number;
 }
@@ -36,17 +44,21 @@ export interface PaperPosition {
   marketId: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
+  marginUsd: number;
+  leverage: number;
   notionalUsd: number;
   entryPrice: number;
   stopLoss: number;
   takeProfit: number;
   initialRiskUsd: number;
+  plannedProfitUsd?: number;
+  plannedRR?: number;
   isBreakEven: boolean;
   sizeQty: number;
   markPx: number;
   unrealizedPnlUsd: number;
   currentR: number;
-  pctPnl: number;
+  roePct?: number;
   markValueUsd: number;
   createdAt: string;
 }
@@ -68,6 +80,8 @@ export interface PortfolioSnapshot {
   equityUsd: number;
   realizedPnlUsd: number;
   totalPnlUsd: number;
+  defaultMarginUsd: number;
+  defaultLeverage: number;
   openCount: number;
   positions: PaperPosition[];
   alerts: PriceAlert[];
@@ -124,6 +138,16 @@ export async function fetchCandles(symbol: string, interval = '15m'): Promise<Ca
   return res.candles;
 }
 
+export async function savePrefs(params: { marginUsd?: number; leverage?: number }): Promise<{
+  ok: boolean;
+  portfolio: PortfolioSnapshot;
+}> {
+  return requestJson('/api/prefs', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 export async function sendTelegramReply(params: {
   chatId?: string;
   text: string;
@@ -139,10 +163,11 @@ export async function placePaperOrder(params: {
   marketId: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
-  notionalUsd: number;
+  marginUsd: number;
+  leverage: number;
   price: number;
-  slPct?: number;
-  rrRatio?: number;
+  stopLoss: number;
+  takeProfit: number;
   notifyTelegram?: boolean;
 }): Promise<{ ok: boolean; portfolio: PortfolioSnapshot; receiptSent: boolean }> {
   return requestJson('/api/paper/order', {
@@ -191,18 +216,5 @@ export async function dismissAlert(alertId: string): Promise<{ ok: boolean; port
   return requestJson('/api/alerts/dismiss', {
     method: 'POST',
     body: JSON.stringify({ alertId }),
-  });
-}
-
-export async function sendVoiceReply(params: {
-  pcmBase64: string;
-  fallbackText: string;
-  chatId?: string;
-  replyToMessageId?: number;
-  sendToTelegram?: boolean;
-}): Promise<{ ok: boolean; voice: { provider: string; durationMs: number; transcript: string } }> {
-  return requestJson('/api/voice/reply', {
-    method: 'POST',
-    body: JSON.stringify(params),
   });
 }

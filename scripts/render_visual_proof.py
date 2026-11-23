@@ -20,7 +20,7 @@ FONT = {
     'M': ["10001","11011","10101","10101","10001","10001","10001"],
     'N': ["10001","11001","10101","10011","10001","10001","10001"],
     'O': ["01110","10001","10001","10001","10001","10001","01110"],
-    'P': ["11110","10001","10001","11110","10000","10000","10000"],
+    'P': ["11110","10001","10001","11110","10000","10000","00000"],
     'Q': ["01110","10001","10001","10001","10101","10010","01101"],
     'R': ["11110","10001","10001","11110","10100","10010","10001"],
     'S': ["01111","10000","10000","01110","00001","00001","11110"],
@@ -44,6 +44,7 @@ FONT = {
     '$': ["00100","01111","10100","01110","00101","11110","00100"],
     '%': ["11001","11010","00100","00100","01011","10011","00000"],
     '.': ["00000","00000","00000","00000","00000","01100","01100"],
+    ',': ["00000","00000","00000","00000","00100","00100","01000"],
     ':': ["00000","00100","00100","00000","00100","00100","00000"],
     '-': ["00000","00000","00000","11111","00000","00000","00000"],
     '+': ["00000","00100","00100","11111","00100","00100","00000"],
@@ -65,122 +66,162 @@ def set_px(buf, x, y, rgb):
         buf[i : i + 3] = bytes(rgb)
 
 
-def draw_line(buf, x0, y0, x1, y1, rgb, thick=1):
-    steps = max(abs(x1 - x0), abs(y1 - y0), 1)
-    for s in range(steps + 1):
-        px = int(round(x0 + (x1 - x0) * s / steps))
-        py = int(round(y0 + (y1 - y0) * s / steps))
-        for oy in range(-thick // 2, thick // 2 + 1):
-            for ox in range(-thick // 2, thick // 2 + 1):
-                set_px(buf, px + ox, py + oy, rgb)
+def fill_rect(buf, x, y, w, h, rgb):
+    for dy in range(h):
+        for dx in range(w):
+            set_px(buf, x + dx, y + dy, rgb)
+
+
+def stroke_rect(buf, x, y, w, h, rgb):
+    for dx in range(w):
+        set_px(buf, x + dx, y, rgb)
+        set_px(buf, x + dx, y + h - 1, rgb)
+    for dy in range(h):
+        set_px(buf, x, y + dy, rgb)
+        set_px(buf, x + w - 1, y + dy, rgb)
 
 
 def draw_text(buf, x, y, text, rgb, scale=2):
     cx = x
     for ch in text.upper():
         g = FONT.get(ch, FONT[' '])
-        for row_i, row in enumerate(g):
-            for col_i, bit in enumerate(row):
+        for r_i, row in enumerate(g):
+            for c_i, bit in enumerate(row):
                 if bit == '1':
                     for sy in range(scale):
                         for sx in range(scale):
-                            set_px(buf, cx + col_i * scale + sx, y + row_i * scale + sy, rgb)
+                            set_px(buf, cx + c_i * scale + sx, y + r_i * scale + sy, rgb)
         cx += 6 * scale
 
 
-def draw_borderless_chart(buf, cx, cy, cw, ch, title, closes, ref_val, ref_label):
-    bright = (56, 255, 146)
-    soft = (28, 138, 76)
-    ref_col = (34, 175, 96)
+def draw_candles(buf, cx, cy, cw, ch, title, bars, levels):
+    bright = (69, 255, 152)
+    bear = (37, 168, 94)
+    soft = (27, 122, 68)
 
     draw_text(buf, cx + 4, cy + 2, title, soft, scale=1)
 
-    all_v = closes + ([ref_val] if ref_val is not None else [])
-    mn, mx = min(all_v), max(all_v)
+    highs = [b[1] for b in bars] + [lv[0] for lv in levels]
+    lows = [b[2] for b in bars] + [lv[0] for lv in levels]
+    rmax, rmin = max(highs), min(lows)
+    padv = (rmax - rmin or 1.0) * 0.08
+    mx, mn = rmax + padv, rmin - padv
     span = mx - mn or 1.0
-    pad_l, pad_r, pad_t, pad_b = 4, 8, 18, 18
+
+    pad_l, pad_r, pad_t, pad_b = 4, 34, 18, 16
     pw, ph = cw - pad_l - pad_r, ch - pad_t - pad_b
 
     def to_y(v):
-        return int(cy + pad_t + (1.0 - (v - mn) / span) * ph)
+        return int(round(cy + pad_t + (1.0 - (v - mn) / span) * ph))
 
-    if ref_val is not None:
-        ry = to_y(ref_val)
-        for dx in range(0, pw, 7):
-            draw_line(buf, cx + pad_l + dx, ry, cx + pad_l + min(dx + 3, pw), ry, ref_col, 1)
-        lbl_w = len(ref_label) * 6
-        lbl_y = ry + 4 if ry < cy + pad_t + ph // 2 else max(cy + 14, ry - 10)
-        draw_text(buf, cx + pad_l + pw - lbl_w, lbl_y, ref_label, soft, scale=1)
+    slot_w = pw / len(bars)
+    body_w = max(4, min(7, int(slot_w - 3)))
 
-    pts = [
-        (int(cx + pad_l + (i / (len(closes) - 1)) * pw), to_y(v))
-        for i, v in enumerate(closes)
-    ]
-    for i in range(len(pts) - 1):
-        draw_line(buf, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], bright, thick=2)
+    for i, (o, h, l, c) in enumerate(bars):
+        xmid = int(round(cx + pad_l + i * slot_w + slot_w / 2))
+        yh, yl, yo, yc = to_y(h), to_y(l), to_y(o), to_y(c)
+        top, bot = min(yo, yc), max(yo, yc)
+        bh = max(2, bot - top)
+        bull = c >= o
 
-    ex, ey = pts[-1]
-    for oy in range(-3, 4):
-        for ox in range(-3, 4):
-            if ox * ox + oy * oy <= 9:
-                set_px(buf, ex + ox, ey + oy, bright)
+        for py in range(yh, yl + 1):
+            set_px(buf, xmid, py, bright if bull else bear)
 
-    draw_text(buf, cx + 4, cy + ch - 11, f"{mn:.2f} - {mx:.2f}", soft, scale=1)
+        bx = xmid - body_w // 2
+        if bull:
+            fill_rect(buf, bx, top, body_w, bh, (0, 0, 0))
+            stroke_rect(buf, bx, top, body_w, bh, bright)
+        else:
+            fill_rect(buf, bx, top, body_w, bh, bear)
+
+    for price, label, emph in levels:
+        ly = to_y(price)
+        col = bright if emph else soft
+        step = 7 if emph else 6
+        dash = 4 if emph else 2
+        for dx in range(0, pw, step):
+            for k in range(dash):
+                if dx + k < pw:
+                    set_px(buf, cx + pad_l + dx + k, ly, col)
+        draw_text(buf, cx + pad_l + pw + 3, max(cy + 14, min(cy + ch - 22, ly - 3)), label, col, scale=1)
+
+    draw_text(buf, cx + 4, cy + ch - 11, f"{rmin:.1f} - {rmax:.1f}", soft, scale=1)
 
 
 def save_png(buf, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    raw_rows = bytearray()
+    raw = bytearray()
     stride = W * 3
     for y in range(H):
-        raw_rows.append(0)
-        raw_rows.extend(buf[y * stride : (y + 1) * stride])
+        raw.append(0)
+        raw.extend(buf[y * stride : (y + 1) * stride])
 
-    def chunk(ctype, data):
-        return struct.pack(">I", len(data)) + ctype + data + struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
+    def chunk(ct, data):
+        return struct.pack(">I", len(data)) + ct + data + struct.pack(">I", zlib.crc32(ct + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
-    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw_rows), 6)) + chunk(b"IEND", b"")
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b"")
     path.write_bytes(png)
 
 
-def render_screens(out_dir: Path):
-    bright = (56, 255, 146)
-    mid = (32, 168, 92)
-    dim = (18, 96, 52)
+def render_v4(out_dir: Path):
+    bright = (69, 255, 152)
+    mid = (37, 168, 94)
+    dim = (22, 108, 60)
 
-    # Screen 1: 1.5R Break-Even Prompt (In-lecture / hands-free position management)
+    # Realistic 16 OHLC 15m ETH bars (o, h, l, c)
+    eth_bars = [
+        (1712, 1718, 1709, 1716),
+        (1716, 1725, 1715, 1724),
+        (1724, 1732, 1722, 1730),
+        (1730, 1734, 1726, 1727),
+        (1727, 1731, 1721, 1722),
+        (1722, 1726, 1719, 1725),
+        (1725, 1733, 1724, 1731),
+        (1731, 1735, 1727, 1728),
+        (1728, 1730, 1720, 1721),
+        (1721, 1724, 1716, 1718),
+        (1718, 1723, 1717, 1722),
+        (1722, 1726, 1720, 1725),
+        (1725, 1728, 1721, 1723),
+        (1723, 1727, 1720, 1726),
+        (1726, 1728, 1722, 1724),
+        (1724, 1726, 1721, 1724.9),
+    ]
+
+    # Screen 1: Interactive SL/TP on live OHLC Candlesticks ($35 x 10x)
     buf = make_canvas()
-    draw_text(buf, 16, 14, "1.5R REACHED - SOL SHORT", dim, scale=1)
-    draw_text(buf, 16, 48, "SOL SHORT  +1.52R", bright, scale=2)
-    draw_text(buf, 16, 76, "$70.75 (IN $72.40)", mid, scale=2)
-    draw_text(buf, 16, 128, "> MOVE STOP TO BE ($72.40)", bright, scale=2)
-    draw_text(buf, 16, 158, "  TAKE 50% (+$19.0)", mid, scale=2)
-    draw_text(buf, 16, 188, "  CLOSE ALL (+$38.0)", mid, scale=2)
-    draw_text(buf, 16, 260, "SWIPE PICK - TAP ACT - DBL EXIT", dim, scale=1)
-
-    sol_closes = [72.5, 72.4, 72.6, 72.3, 72.1, 72.2, 71.9, 71.8, 71.6, 71.7, 71.4, 71.2, 71.3, 71.0, 70.9, 70.75]
-    draw_borderless_chart(buf, 374, 56, 186, 126, "SOL 15M", sol_closes, 72.40, "ENTRY")
+    draw_text(buf, 16, 12, "3/4 TAKE PROFIT - ETH SHORT", dim, scale=1)
+    draw_text(buf, 16, 48, "SL $1,738.0 (-$2.65)", mid, scale=2)
+    draw_text(buf, 16, 78, "> TP $1,692.0 (1.9%)", bright, scale=2)
+    draw_text(buf, 16, 130, "GAIN +$6.68", bright, scale=2)
+    draw_text(buf, 16, 160, "REWARD 2.52R ($35 X 10X)", mid, scale=2)
+    draw_text(buf, 16, 260, "SWIPE MOVE TP - TAP REVIEW - DBL BACK", dim, scale=1)
+    draw_candles(
+        buf, 344, 52, 220, 142, "ETH 15M", eth_bars,
+        [(1738.0, "SL", False), (1724.9, "IN", False), (1692.0, "TP", True)]
+    )
     save_png(buf, out_dir / "g2_feed_preview.png")
 
-    # Screen 2: Price Alert Hit -> Structure Break -> 1-Tap Short with Auto SL / 2R TP
+    # Screen 2: 1.5R Break-Even Prompt on OHLC Candlesticks
     buf2 = make_canvas()
-    draw_text(buf2, 16, 14, "ALERT HIT - NEAR-PERP - PAPER", dim, scale=1)
-    draw_text(buf2, 16, 48, "NEAR  $4.19  -1.8%", bright, scale=2)
-    draw_text(buf2, 16, 76, "STRUCTURE BREAK $4.20", mid, scale=2)
-    draw_text(buf2, 16, 128, "> SHORT $250 SL+1.5% 2R", bright, scale=2)
-    draw_text(buf2, 16, 158, "  LONG  $250 SL-1.5% 2R", mid, scale=2)
-    draw_text(buf2, 16, 188, "  DISMISS ALERT", mid, scale=2)
-    draw_text(buf2, 16, 260, "SWIPE PICK - TAP EXECUTE - DBL EXIT", dim, scale=1)
-
-    near_closes = [4.28, 4.30, 4.31, 4.29, 4.26, 4.27, 4.25, 4.23, 4.24, 4.22, 4.21, 4.22, 4.20, 4.18, 4.19]
-    draw_borderless_chart(buf2, 374, 56, 186, 126, "NEAR 15M", near_closes, 4.20, "ALERT")
+    draw_text(buf2, 16, 12, "1.5R REACHED - ETH SHORT", dim, scale=1)
+    draw_text(buf2, 16, 48, "ETH SHORT +1.55R", bright, scale=2)
+    draw_text(buf2, 16, 76, "$1,704.5 (IN $1,724.9)", mid, scale=2)
+    draw_text(buf2, 16, 128, "> MOVE STOP TO BE", bright, scale=2)
+    draw_text(buf2, 16, 158, "  TAKE 50% (+$2.07)", mid, scale=2)
+    draw_text(buf2, 16, 188, "  CLOSE ALL (+$4.14)", mid, scale=2)
+    draw_text(buf2, 16, 260, "SWIPE PICK - TAP ACT - DBL EXIT", dim, scale=1)
+    draw_candles(
+        buf2, 344, 52, 220, 142, "ETH 15M", eth_bars,
+        [(1724.9, "IN", True), (1738.0, "SL", False)]
+    )
     save_png(buf2, out_dir / "g2_alert_entry.png")
 
 
 if __name__ == "__main__":
     art_dir = Path(__file__).resolve().parent.parent / "artifacts"
-    render_screens(art_dir)
+    render_v4(art_dir)
     for fn in ("g2_feed_preview.png", "g2_alert_entry.png"):
         p = art_dir / fn
         print(f"Rendered {p} ({p.stat().st_size} bytes)")

@@ -5,14 +5,16 @@ import {
   fetchCandles,
   moveStopToBE,
   placePaperOrder,
+  savePrefs,
   sendTelegramReply,
-  sendVoiceReply,
   takePartialProfit,
 } from './api';
 import { connectEvenBridge, type GlassesHost } from './bridge';
 import { drawG2Preview } from './preview';
 import {
-  PAPER_NOTIONALS,
+  LEVERAGE_PRESETS,
+  MARGIN_PRESETS,
+  computeTicketMath,
   createInitialUIState,
   formatPx,
   getActiveFeedMessage,
@@ -32,10 +34,11 @@ const badgeEl = document.getElementById('runtime-badge') as HTMLElement;
 const viewEl = document.getElementById('view-indicator') as HTMLElement;
 const statusEl = document.getElementById('status-panel') as HTMLElement;
 const logEl = document.getElementById('event-log') as HTMLElement;
+const marginInput = document.getElementById('inp-margin') as HTMLInputElement | null;
+const levInput = document.getElementById('inp-lev') as HTMLInputElement | null;
 
 const ui = createInitialUIState();
 let host: GlassesHost | null = null;
-let pcmChunks: Uint8Array[] = [];
 
 function log(msg: string): void {
   const ts = new Date().toLocaleTimeString();
@@ -51,16 +54,16 @@ function updateStatusBar(): void {
   const port = ui.data.portfolio;
   statusEl.innerHTML =
     `<strong>Telegram:</strong> @${tg.botUsername || 'sezirneonbot'} ` +
-    `(${tg.activeChatId ? tg.activeChatTitle || tg.activeChatId : 'waiting for msg'}) · ` +
+    `(${tg.activeChatId ? tg.activeChatTitle || tg.activeChatId : 'waiting'}) · ` +
     `<strong>Hyperliquid:</strong> ${ui.data.markets.length} perps · ` +
     `<strong>Paper:</strong> $${port.cashUsd.toFixed(0)} (${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}) · ` +
-    `<strong>Open:</strong> ${port.openCount} · <strong>Alerts:</strong> ${port.alerts.length}`;
+    `<strong>Default:</strong> $${ui.ticketMarginUsd} × ${ui.ticketLeverage}x`;
 }
 
 async function ensureActiveCandles(): Promise<void> {
   const mkt = getActiveMarket(ui);
   if (!mkt) return;
-  if (ui.candles && ui.candles.symbol === mkt.symbol && ui.candles.closes.length >= 2) return;
+  if (ui.candles && ui.candles.symbol === mkt.symbol && ui.candles.bars.length >= 2) return;
   try {
     ui.candles = await fetchCandles(mkt.symbol, '15m');
   } catch {
@@ -77,8 +80,21 @@ async function paint(forceRebuild = false): Promise<void> {
 
 async function syncState(refresh = false): Promise<void> {
   try {
+    const prevDefMargin = ui.data?.portfolio.defaultMarginUsd;
+    const prevDefLev = ui.data?.portfolio.defaultLeverage;
     ui.data = await fetchBackendState(refresh);
-    if (!ui.candles && ui.data.candles?.closes?.length >= 2) {
+
+    // Sync /size or /lev changes made in Telegram
+    if (ui.data.portfolio.defaultMarginUsd && ui.data.portfolio.defaultMarginUsd !== prevDefMargin) {
+      ui.ticketMarginUsd = ui.data.portfolio.defaultMarginUsd;
+      if (marginInput) marginInput.value = String(ui.ticketMarginUsd);
+    }
+    if (ui.data.portfolio.defaultLeverage && ui.data.portfolio.defaultLeverage !== prevDefLev) {
+      ui.ticketLeverage = ui.data.portfolio.defaultLeverage;
+      if (levInput) levInput.value = String(ui.ticketLeverage);
+    }
+
+    if (!ui.candles && ui.data.candles?.bars?.length >= 2) {
       ui.candles = ui.data.candles;
     }
     await ensureActiveCandles();
@@ -89,32 +105,27 @@ async function syncState(refresh = false): Promise<void> {
   }
 }
 
-function concatUint8(chunks: Uint8Array[]): string {
-  const total = chunks.reduce((acc, c) => acc + c.length, 0);
-  const merged = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    merged.set(c, off);
-    off += c.length;
-  }
-  let bin = '';
-  for (let i = 0; i < merged.length; i++) bin += String.fromCharCode(merged[i]);
-  return btoa(bin);
+function nextMarginPreset(current: number): number {
+  const idx = MARGIN_PRESETS.findIndex((v) => v > current);
+  return idx >= 0 ? MARGIN_PRESETS[idx] : MARGIN_PRESETS[0];
+}
+
+function nextLevPreset(current: number): number {
+  const idx = LEVERAGE_PRESETS.findIndex((v) => v > current);
+  return idx >= 0 ? LEVERAGE_PRESETS[idx] : LEVERAGE_PRESETS[0];
 }
 
 async function executeAction(action: HudAction): Promise<void> {
   const pos = getActivePosition(ui);
   const alert = getActiveTriggeredAlert(ui);
-  const mkt = getActiveMarket(ui);
   const msg = getActiveFeedMessage(ui);
-  const notional = PAPER_NOTIONALS[ui.orderStakeIndex % PAPER_NOTIONALS.length];
 
   try {
     if (action.kind === 'MOVE_BE' && pos) {
       const res = await moveStopToBE(pos.id);
       if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = `BE set @ ${formatPx(res.position.stopLoss)}`;
-      log(`Stop moved to Break-Even on ${pos.symbol}`);
+      ui.toast = `BE @ ${formatPx(res.position.stopLoss)}`;
+      log(`Stop moved to BE on ${pos.symbol}`);
       ui.view = 'GLANCE';
       await paint(true);
       return;
@@ -123,7 +134,7 @@ async function executeAction(action: HudAction): Promise<void> {
     if (action.kind === 'TAKE_HALF' && pos) {
       const res = await takePartialProfit(pos.id, 0.5);
       if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = `50% closed (${res.partial.realizedPnlUsd >= 0 ? '+' : ''}$${res.partial.realizedPnlUsd.toFixed(1)})`;
+      ui.toast = `50% (${res.partial.realizedPnlUsd >= 0 ? '+' : ''}$${res.partial.realizedPnlUsd.toFixed(1)})`;
       log(`Took 50% profit on ${pos.symbol}`);
       ui.view = 'GLANCE';
       await paint(true);
@@ -133,31 +144,18 @@ async function executeAction(action: HudAction): Promise<void> {
     if (action.kind === 'CLOSE_POS' && pos) {
       const res = await closePaperPosition({ positionId: pos.id, notifyTelegram: true });
       if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = `Closed ${pos.symbol} (${res.closed.realizedPnlUsd >= 0 ? '+' : ''}$${res.closed.realizedPnlUsd.toFixed(1)})`;
+      ui.toast = `Closed (${res.closed.realizedPnlUsd >= 0 ? '+' : ''}$${res.closed.realizedPnlUsd.toFixed(1)})`;
       log(`Closed ${pos.symbol} @ ${formatPx(res.closed.exitPrice)}`);
       ui.view = 'GLANCE';
       await paint(true);
       return;
     }
 
-    if ((action.kind === 'OPEN_SHORT' || action.kind === 'OPEN_LONG') && mkt) {
-      const side = action.kind === 'OPEN_SHORT' ? 'SHORT' : 'LONG';
-      const res = await placePaperOrder({
-        marketId: mkt.id,
-        symbol: mkt.symbol,
-        side,
-        notionalUsd: notional,
-        price: mkt.markPx,
-        slPct: 1.5,
-        rrRatio: 2.0,
-        notifyTelegram: true,
-      });
-      if (ui.data) ui.data.portfolio = res.portfolio;
-      if (alert) await dismissAlert(alert.id);
-      ui.toast = `${side} ${mkt.symbol} $${notional} (SL/2R)`;
-      log(`Opened paper ${side} ${mkt.symbol} @ ${formatPx(mkt.markPx)}`);
-      ui.view = 'MANAGE';
-      ui.actionIndex = 0;
+    if (action.kind === 'START_SHORT' || action.kind === 'START_LONG' || action.kind === 'GO_TICKET') {
+      if (action.kind === 'START_SHORT') ui.ticketSide = 'SHORT';
+      if (action.kind === 'START_LONG') ui.ticketSide = 'LONG';
+      await ensureActiveCandles();
+      ui.view = 'TICKET_SIDE';
       await paint(true);
       return;
     }
@@ -165,7 +163,7 @@ async function executeAction(action: HudAction): Promise<void> {
     if (action.kind === 'DISMISS_ALERT' && alert) {
       const res = await dismissAlert(alert.id);
       if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = 'Alert dismissed';
+      ui.toast = 'Dismissed';
       ui.actionIndex = 0;
       await paint(true);
       return;
@@ -185,16 +183,10 @@ async function executeAction(action: HudAction): Promise<void> {
       return;
     }
 
-    if (action.kind === 'GO_ENTRY') {
-      await ensureActiveCandles();
-      ui.view = 'ENTRY';
-      await paint(true);
-      return;
-    }
-
     if (action.kind === 'GO_MANAGE') {
       ui.actionIndex = 0;
       ui.view = 'MANAGE';
+      await ensureActiveCandles();
       await paint(true);
       return;
     }
@@ -205,7 +197,7 @@ async function executeAction(action: HudAction): Promise<void> {
       await paint(true);
     }
   } catch (err) {
-    ui.toast = String((err as Error)?.message || err).slice(0, 28);
+    ui.toast = String((err as Error)?.message || err).slice(0, 26);
     await paint(false);
   }
 }
@@ -214,54 +206,13 @@ async function handleGesture(g: Gesture): Promise<void> {
   log(`Gesture: ${g} (${ui.view})`);
   ui.toast = '';
 
-  if (g === 'LONG_PRESS_START' && ui.view === 'GLANCE') {
-    ui.view = 'VOICE';
-    ui.voiceCapturing = true;
-    pcmChunks = [];
-    await paint(true);
-    await host?.startMic((chunk) => pcmChunks.push(chunk));
-    return;
-  }
-
-  if (g === 'LONG_PRESS_END' && ui.view === 'VOICE') {
-    await host?.stopMic();
-    ui.voiceCapturing = false;
-    const msg = getActiveFeedMessage(ui);
-    const mkt = getActiveMarket(ui);
-    try {
-      const res = await sendVoiceReply({
-        pcmBase64: concatUint8(pcmChunks),
-        fallbackText: mkt ? `Watching ${mkt.symbol} at ${formatPx(mkt.markPx)}, checking structure.` : 'Got it, watching now.',
-        chatId: msg?.chatId,
-        replyToMessageId: msg?.messageId,
-        sendToTelegram: true,
-      });
-      ui.toast = 'Voice sent';
-      log(`Voice sent: "${res.voice.transcript}"`);
-    } catch (err) {
-      ui.toast = String((err as Error)?.message || err).slice(0, 24);
-    }
-    ui.view = 'GLANCE';
-    await syncState(false);
-    await paint(true);
-    return;
-  }
-
-  if (ui.view === 'VOICE' && g === 'DOUBLE_TAP') {
-    await host?.stopMic();
-    ui.voiceCapturing = false;
-    ui.view = 'GLANCE';
-    await paint(true);
-    return;
-  }
-
   if (ui.view === 'GLANCE') {
     const alert = getActiveTriggeredAlert(ui);
     const pos = getActivePosition(ui);
     const inPriorityPrompt = Boolean(alert) || Boolean(pos && pos.currentR >= 1.5 && !pos.isBreakEven);
 
     if (inPriorityPrompt) {
-      const actions = alert ? getAlertActions(ui) : getManageActions(ui).slice(0, 3);
+      const actions = alert ? getAlertActions() : getManageActions(ui).slice(0, 3);
       if (g === 'SWIPE_DOWN') {
         ui.actionIndex = (ui.actionIndex + 1) % actions.length;
         await paint(false);
@@ -290,11 +241,126 @@ async function handleGesture(g: Gesture): Promise<void> {
       ui.actionIndex = 0;
       if (pos) ui.view = 'MANAGE';
       else if (getActiveFeedMessage(ui)) ui.view = 'REPLY';
-      else ui.view = 'ENTRY';
+      else ui.view = 'TICKET_SIDE';
       await ensureActiveCandles();
       await paint(true);
     } else if (g === 'DOUBLE_TAP') {
       await host?.exitRoot();
+    }
+    return;
+  }
+
+  // STEP 1/4: Side & Margin Size ($35 etc.)
+  if (ui.view === 'TICKET_SIDE') {
+    if (g === 'SWIPE_UP') {
+      ui.ticketSide = ui.ticketSide === 'SHORT' ? 'LONG' : 'SHORT';
+      await paint(false);
+    } else if (g === 'SWIPE_DOWN') {
+      ui.ticketMarginUsd = nextMarginPreset(ui.ticketMarginUsd);
+      if (marginInput) marginInput.value = String(ui.ticketMarginUsd);
+      await paint(false);
+    } else if (g === 'TAP') {
+      ui.view = 'TICKET_SL';
+      await paint(true);
+    } else if (g === 'DOUBLE_TAP') {
+      ui.view = 'GLANCE';
+      await paint(true);
+    }
+    return;
+  }
+
+  // STEP 2/4: Interactive Stop Loss on Live Candlesticks (SWIPE UP moves SL higher on chart, DOWN moves lower)
+  if (ui.view === 'TICKET_SL') {
+    const step = 0.25; // 0.25% precision ticks across the candles
+    if (g === 'SWIPE_UP') {
+      // Moving SL UP on chart: for SHORT = wider SL (+step), for LONG = tighter SL (-step)
+      ui.ticketSlPct =
+        ui.ticketSide === 'SHORT'
+          ? Math.min(12, Number((ui.ticketSlPct + step).toFixed(2)))
+          : Math.max(0.25, Number((ui.ticketSlPct - step).toFixed(2)));
+      await paint(false);
+    } else if (g === 'SWIPE_DOWN') {
+      ui.ticketSlPct =
+        ui.ticketSide === 'SHORT'
+          ? Math.max(0.25, Number((ui.ticketSlPct - step).toFixed(2)))
+          : Math.min(12, Number((ui.ticketSlPct + step).toFixed(2)));
+      await paint(false);
+    } else if (g === 'TAP') {
+      ui.view = 'TICKET_TP';
+      await paint(true);
+    } else if (g === 'DOUBLE_TAP') {
+      ui.view = 'TICKET_SIDE';
+      await paint(true);
+    }
+    return;
+  }
+
+  // STEP 3/4: Interactive Take Profit on Live Candlesticks (SWIPE UP moves TP higher on chart, DOWN moves lower)
+  if (ui.view === 'TICKET_TP') {
+    const step = 0.35;
+    if (g === 'SWIPE_UP') {
+      // Moving TP UP on chart: for SHORT = closer TP (-step), for LONG = farther TP (+step)
+      ui.ticketTpPct =
+        ui.ticketSide === 'SHORT'
+          ? Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)))
+          : Math.min(25, Number((ui.ticketTpPct + step).toFixed(2)));
+      await paint(false);
+    } else if (g === 'SWIPE_DOWN') {
+      ui.ticketTpPct =
+        ui.ticketSide === 'SHORT'
+          ? Math.min(25, Number((ui.ticketTpPct + step).toFixed(2)))
+          : Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)));
+      await paint(false);
+    } else if (g === 'TAP') {
+      ui.view = 'TICKET_CONFIRM';
+      await paint(true);
+    } else if (g === 'DOUBLE_TAP') {
+      ui.view = 'TICKET_SL';
+      await paint(true);
+    }
+    return;
+  }
+
+  // STEP 4/4: Execute custom paper trade with exact SL & TP
+  if (ui.view === 'TICKET_CONFIRM') {
+    if (g === 'DOUBLE_TAP') {
+      ui.view = 'TICKET_TP';
+      await paint(true);
+      return;
+    }
+    if (g === 'TAP') {
+      const mkt = getActiveMarket(ui);
+      const alert = getActiveTriggeredAlert(ui);
+      if (!mkt) {
+        ui.view = 'GLANCE';
+        await paint(true);
+        return;
+      }
+      const calc = computeTicketMath(ui, mkt.markPx);
+      try {
+        const res = await placePaperOrder({
+          marketId: mkt.id,
+          symbol: mkt.symbol,
+          side: ui.ticketSide,
+          marginUsd: ui.ticketMarginUsd,
+          leverage: ui.ticketLeverage,
+          price: mkt.markPx,
+          stopLoss: calc.stopLoss,
+          takeProfit: calc.takeProfit,
+          notifyTelegram: true,
+        });
+        if (ui.data) ui.data.portfolio = res.portfolio;
+        if (alert) await dismissAlert(alert.id);
+        ui.toast = `${ui.ticketSide} ${mkt.symbol} $${ui.ticketMarginUsd}`;
+        log(`Opened ${ui.ticketSide} ${mkt.symbol} $${ui.ticketMarginUsd}×${ui.ticketLeverage} | SL ${formatPx(calc.stopLoss)} | TP ${formatPx(calc.takeProfit)}`);
+        ui.view = 'MANAGE';
+        ui.actionIndex = 0;
+        await paint(true);
+      } catch (err) {
+        ui.toast = String((err as Error)?.message || err).slice(0, 26);
+        ui.view = 'GLANCE';
+        await paint(true);
+      }
     }
     return;
   }
@@ -309,23 +375,6 @@ async function handleGesture(g: Gesture): Promise<void> {
       await paint(false);
     } else if (g === 'TAP') {
       await executeAction(actions[ui.actionIndex % actions.length]);
-    } else if (g === 'DOUBLE_TAP') {
-      ui.view = 'GLANCE';
-      await paint(true);
-    }
-    return;
-  }
-
-  if (ui.view === 'ENTRY') {
-    if (g === 'SWIPE_DOWN' || g === 'SWIPE_UP') {
-      ui.orderSide = ui.orderSide === 'SHORT' ? 'LONG' : 'SHORT';
-      if (g === 'SWIPE_UP') ui.orderStakeIndex = (ui.orderStakeIndex + 1) % PAPER_NOTIONALS.length;
-      await paint(false);
-    } else if (g === 'TAP') {
-      await executeAction({
-        label: ui.orderSide,
-        kind: ui.orderSide === 'SHORT' ? 'OPEN_SHORT' : 'OPEN_LONG',
-      });
     } else if (g === 'DOUBLE_TAP') {
       ui.view = 'GLANCE';
       await paint(true);
@@ -357,9 +406,14 @@ async function boot(): Promise<void> {
   host.onMenuSelect((id) => {
     ui.actionIndex = 0;
     if (id === 1) ui.view = 'GLANCE';
-    else if (id === 2) ui.view = 'MANAGE';
-    else if (id === 3) ui.view = 'ENTRY';
-    else if (id === 4) void syncState(true);
+    else if (id === 2) ui.view = 'TICKET_SIDE';
+    else if (id === 3) ui.view = 'MANAGE';
+    else if (id === 4) {
+      ui.ticketLeverage = nextLevPreset(ui.ticketLeverage);
+      if (levInput) levInput.value = String(ui.ticketLeverage);
+      void savePrefs({ leverage: ui.ticketLeverage });
+      log(`Leverage set to ${ui.ticketLeverage}x`);
+    }
     void paint(true);
   });
 
@@ -367,19 +421,27 @@ async function boot(): Promise<void> {
   document.getElementById('btn-tap')?.addEventListener('click', () => void handleGesture('TAP'));
   document.getElementById('btn-down')?.addEventListener('click', () => void handleGesture('SWIPE_DOWN'));
   document.getElementById('btn-dbl')?.addEventListener('click', () => void handleGesture('DOUBLE_TAP'));
-  const voiceBtn = document.getElementById('btn-voice');
-  voiceBtn?.addEventListener('mousedown', () => void handleGesture('LONG_PRESS_START'));
-  voiceBtn?.addEventListener('mouseup', () => void handleGesture('LONG_PRESS_END'));
+  document.getElementById('btn-apply-prefs')?.addEventListener('click', async () => {
+    const m = Number(marginInput?.value || ui.ticketMarginUsd);
+    const l = Number(levInput?.value || ui.ticketLeverage);
+    if (Number.isFinite(m) && m >= 1) ui.ticketMarginUsd = m;
+    if (Number.isFinite(l) && l >= 1) ui.ticketLeverage = Math.round(l);
+    try {
+      const res = await savePrefs({ marginUsd: ui.ticketMarginUsd, leverage: ui.ticketLeverage });
+      if (ui.data) ui.data.portfolio = res.portfolio;
+      log(`Custom size saved: $${ui.ticketMarginUsd} × ${ui.ticketLeverage}x`);
+      await paint(false);
+    } catch (err) {
+      log(`Pref error: ${String((err as Error)?.message || err)}`);
+    }
+  });
 
   window.addEventListener('keydown', (e) => {
+    if (document.activeElement?.tagName === 'INPUT') return;
     if (e.key === 'ArrowUp') void handleGesture('SWIPE_UP');
     if (e.key === 'ArrowDown') void handleGesture('SWIPE_DOWN');
     if (e.key === 'Enter') void handleGesture('TAP');
     if (e.key === 'Escape') void handleGesture('DOUBLE_TAP');
-    if (e.key.toLowerCase() === 'v' && !e.repeat) void handleGesture('LONG_PRESS_START');
-  });
-  window.addEventListener('keyup', (e) => {
-    if (e.key.toLowerCase() === 'v') void handleGesture('LONG_PRESS_END');
   });
 
   await syncState(true);
