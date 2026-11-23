@@ -45,19 +45,19 @@ export function formatQty(qty: number): string {
  */
 export function adjustRiskUsd(current: number, direction: 1 | -1): number {
   const cur = Math.max(1, Number(current) || 100);
-  let step = 10;
+  let step = 50;
   if (direction > 0) {
-    if (cur < 50) step = 5;
-    else if (cur < 200) step = 10;
-    else if (cur < 500) step = 25;
-    else if (cur < 2000) step = 50;
-    else step = 100;
+    if (cur < 50) step = 10;
+    else if (cur < 100) step = 25;
+    else if (cur < 500) step = 50;
+    else if (cur < 2000) step = 100;
+    else step = 250;
   } else {
-    if (cur <= 50) step = 5;
-    else if (cur <= 200) step = 10;
-    else if (cur <= 500) step = 25;
-    else if (cur <= 2000) step = 50;
-    else step = 100;
+    if (cur <= 50) step = 10;
+    else if (cur <= 100) step = 25;
+    else if (cur <= 500) step = 50;
+    else if (cur <= 2000) step = 100;
+    else step = 250;
   }
   const next = cur + direction * step;
   return Math.max(5, Math.min(50000, Math.round(next)));
@@ -467,7 +467,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
         `Reward ${calc.rr}R`,
         `Tap to execute paper`,
       ].join('\n'),
-      hint: 'swipe $ risk · tap execute · dbl TP',
+      hint: 'type $ or swipe · tap execute · dbl TP',
       chart: buildChart(st, mkt, [
         { price: calc.stopLoss, label: 'SL', emphasized: true },
         { price: px, label: 'IN', emphasized: false },
