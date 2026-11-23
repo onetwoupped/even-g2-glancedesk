@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "tsc --noEmit && vite build",
     "test": "node --test tests/*.test.mjs",
-    "sim": "evenhub-simulator http://127.0.0.1:5173",
+    "sim": "node node_modules/@evenrealities/evenhub-simulator/bin/index.js http://127.0.0.1:5173",
     "pack:ehpk": "evenhub pack app.json dist -o glancedesk.ehpk"
   },
   "dependencies": {
