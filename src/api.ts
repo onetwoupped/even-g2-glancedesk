@@ -44,8 +44,8 @@ export interface PaperPosition {
   marketId: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
+  riskUsd: number;
   marginUsd: number;
-  leverage: number;
   notionalUsd: number;
   entryPrice: number;
   stopLoss: number;
@@ -58,7 +58,6 @@ export interface PaperPosition {
   markPx: number;
   unrealizedPnlUsd: number;
   currentR: number;
-  roePct?: number;
   markValueUsd: number;
   createdAt: string;
 }
@@ -80,8 +79,7 @@ export interface PortfolioSnapshot {
   equityUsd: number;
   realizedPnlUsd: number;
   totalPnlUsd: number;
-  defaultMarginUsd: number;
-  defaultLeverage: number;
+  defaultRiskUsd: number;
   openCount: number;
   positions: PaperPosition[];
   alerts: PriceAlert[];
@@ -138,13 +136,13 @@ export async function fetchCandles(symbol: string, interval = '15m'): Promise<Ca
   return res.candles;
 }
 
-export async function savePrefs(params: { marginUsd?: number; leverage?: number }): Promise<{
+export async function saveRiskBudget(riskUsd: number): Promise<{
   ok: boolean;
   portfolio: PortfolioSnapshot;
 }> {
   return requestJson('/api/prefs', {
     method: 'POST',
-    body: JSON.stringify(params),
+    body: JSON.stringify({ riskUsd }),
   });
 }
 
@@ -163,8 +161,7 @@ export async function placePaperOrder(params: {
   marketId: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
-  marginUsd: number;
-  leverage: number;
+  riskUsd: number;
   price: number;
   stopLoss: number;
   takeProfit: number;

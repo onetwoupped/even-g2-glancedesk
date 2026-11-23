@@ -87,12 +87,13 @@ async function processTelegramCommands(messages, markets) {
     const cmd = parts[0].split('@')[0].toLowerCase();
 
     try {
-      if (cmd === '/size' && parts[1]) {
-        const res = ledger.setPreferences({ marginUsd: Number(parts[1]) });
-        await notifyTg(`Default paper margin set to $${res.defaultMarginUsd} (${res.defaultLeverage}x).`, msg.chatId, msg.messageId);
-      } else if (cmd === '/lev' && parts[1]) {
-        const res = ledger.setPreferences({ leverage: Number(parts[1].replace(/x$/i, '')) });
-        await notifyTg(`Default leverage set to ${res.defaultLeverage}x (margin $${res.defaultMarginUsd}).`, msg.chatId, msg.messageId);
+      if ((cmd === '/risk' || cmd === '/r') && parts[1]) {
+        const res = ledger.setRiskBudget(Number(parts[1].replace(/^\$/, '')));
+        await notifyTg(
+          `1R risk set to $${res.defaultRiskUsd} (0.5R = $${(res.defaultRiskUsd * 0.5).toFixed(0)} · 2R = $${(res.defaultRiskUsd * 2).toFixed(0)}).`,
+          msg.chatId,
+          msg.messageId
+        );
       } else if (cmd === '/price' && parts[1]) {
         const sym = parts[1].replace(/^\$/, '').toUpperCase();
         const m = markets.find((x) => x.symbol.toUpperCase() === sym);
@@ -129,10 +130,10 @@ async function processTelegramCommands(messages, markets) {
       } else if (cmd === '/pnl') {
         const snap = ledger.snapshot(markets);
         const sign = snap.totalPnlUsd >= 0 ? '+' : '';
-        const lines = [`Paper equity $${snap.equityUsd.toFixed(2)} (${sign}$${snap.totalPnlUsd.toFixed(2)})`];
+        const lines = [`Paper equity $${snap.equityUsd.toFixed(2)} (${sign}$${snap.totalPnlUsd.toFixed(2)}) · 1R = $${snap.defaultRiskUsd}`];
         for (const p of snap.positions.slice(0, 3)) {
           const rs = p.currentR >= 0 ? '+' : '';
-          lines.push(`${p.side} ${p.symbol} $${p.marginUsd}×${p.leverage} ${rs}${p.currentR}R · SL ${formatPrice(p.stopLoss)}${p.isBreakEven ? ' (BE)' : ''}`);
+          lines.push(`${p.side} ${p.symbol} risk $${p.riskUsd} (${rs}${p.currentR}R) · SL ${formatPrice(p.stopLoss)}${p.isBreakEven ? ' (BE)' : ''}`);
         }
         await notifyTg(lines.join('\n'), msg.chatId, msg.messageId);
       } else if (cmd === '/close') {
@@ -151,7 +152,7 @@ async function processTelegramCommands(messages, markets) {
         }
       } else if (cmd === '/help' || cmd === '/start') {
         await notifyTg(
-          'Commands:\n/size 35 — set exact margin ($)\n/lev 10 — set leverage\n/alert NEAR 4.20 structure\n/be · /half · /close · /pnl · /price NEAR',
+          'Commands:\n/risk 242 — set your exact 1R dollar risk\n/alert NEAR 4.20 structure\n/be · /half · /close · /pnl · /price NEAR',
           msg.chatId,
           msg.messageId
         );
@@ -178,7 +179,7 @@ const server = http.createServer(async (req, res) => {
       if (!telegram.botInfo && telegram.configured) await telegram.verifyBot();
       return sendJson(res, 200, {
         ok: true,
-        app: 'GlanceDesk v4 (Even G2 Candlestick + Interactive SL/TP)',
+        app: 'GlanceDesk v5 (Even G2 1R Risk-Sized Candlestick HUD)',
         mode: 'PAPER_ONLY',
         telegramConfigured: telegram.configured,
         botUsername: telegram.botInfo?.username || env('TELEGRAM_BOT_USERNAME', ''),
@@ -260,7 +261,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/prefs') {
       const body = await readJsonBody(req);
-      const prefs = ledger.setPreferences({ marginUsd: body.marginUsd, leverage: body.leverage });
+      const prefs = ledger.setRiskBudget(body.riskUsd);
       const hlState = await hyperliquid.getMarkets();
       return sendJson(res, 200, { ok: true, prefs, portfolio: ledger.snapshot(hlState.markets) });
     }
@@ -280,15 +281,14 @@ const server = http.createServer(async (req, res) => {
       const hlState = await hyperliquid.getMarkets();
       const sym = String(body.symbol || body.marketId || 'ETH').replace(/-PERP$/i, '').toUpperCase();
       const market = hlState.markets.find((m) => m.symbol.toUpperCase() === sym);
-      const side = String(body.side || 'SHORT').toUpperCase();
+      const side = String(body.side || 'LONG').toUpperCase();
       const fillPrice = market ? market.markPx : Number(body.price || 0);
 
       const order = ledger.placePaperOrder({
         marketId: `${sym}-PERP`,
         symbol: sym,
         side,
-        marginUsd: Number(body.marginUsd ?? ledger.state.defaultMarginUsd),
-        leverage: Number(body.leverage ?? ledger.state.defaultLeverage),
+        riskUsd: Number(body.riskUsd ?? ledger.state.defaultRiskUsd),
         price: fillPrice,
         stopLoss: Number(body.stopLoss),
         takeProfit: Number(body.takeProfit),
@@ -297,8 +297,9 @@ const server = http.createServer(async (req, res) => {
       const receiptSent =
         body.notifyTelegram !== false
           ? await notifyTg(
-              `Paper ${order.side} ${order.symbol} $${order.marginUsd}×${order.leverage} ($${order.notionalUsd}) @ ${formatPrice(order.entryPrice)}\n` +
-                `SL ${formatPrice(order.stopLoss)} (-$${order.initialRiskUsd.toFixed(2)}) · TP ${formatPrice(order.takeProfit)} (+$${order.plannedProfitUsd.toFixed(2)} · ${order.plannedRR}R)`
+              `Paper ${order.side} ${order.symbol} @ ${formatPrice(order.entryPrice)}\n` +
+                `Auto-sized: ${order.sizeQty.toFixed(3)} ${order.symbol} ($${order.notionalUsd.toFixed(0)} notional)\n` +
+                `SL ${formatPrice(order.stopLoss)} (-$${order.riskUsd.toFixed(2)}) · TP ${formatPrice(order.takeProfit)} (+$${order.plannedProfitUsd.toFixed(2)} · ${order.plannedRR}R)`
             )
           : false;
 
@@ -396,8 +397,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   await telegram.verifyBot();
-  console.log(`[GlanceDesk v4] Backend listening on http://127.0.0.1:${PORT}`);
+  console.log(`[GlanceDesk v5] Backend listening on http://127.0.0.1:${PORT}`);
   console.log(
-    `[GlanceDesk v4] Telegram bot: ${telegram.botInfo?.username ? '@' + telegram.botInfo.username : 'unverified/offline'}`
+    `[GlanceDesk v5] Telegram bot: ${telegram.botInfo?.username ? '@' + telegram.botInfo.username : 'unverified/offline'}`
   );
 });

@@ -159,12 +159,10 @@
       </div>
 
       <div class="prefs">
-        <span>Exact Margin ($):</span>
-        <input id="inp-margin" type="number" min="1" max="5000" step="1" value="35" />
-        <span>Leverage (x):</span>
-        <input id="inp-lev" type="number" min="1" max="50" step="1" value="10" />
-        <button id="btn-apply-prefs">Apply to G2</button>
-        <span style="color:#78a389;">(or Telegram: <code>/size 35</code>, <code>/lev 10</code>)</span>
+        <span>Exact 1R Stop Risk ($):</span>
+        <input id="inp-risk" type="number" min="1" max="50000" step="1" value="100" />
+        <button id="btn-apply-risk">Set 1R Risk</button>
+        <span style="color:#78a389;">(or Telegram: <code>/risk 242</code> · glasses: <code>0.5R / 1R / 2R</code>)</span>
       </div>
 
       <div class="meta" id="status-panel">Loading live Telegram + Hyperliquid OHLC state...</div>

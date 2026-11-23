@@ -189,13 +189,13 @@ def render_v4(out_dir: Path):
         (1724, 1726, 1721, 1724.9),
     ]
 
-    # Screen 1: Interactive SL/TP on live OHLC Candlesticks ($35 x 10x)
+    # Screen 1: v5 True 1R Risk-Sized Order Ticket ($242 locked risk -> auto-sized qty)
     buf = make_canvas()
-    draw_text(buf, 16, 12, "3/4 TAKE PROFIT - ETH SHORT", dim, scale=1)
-    draw_text(buf, 16, 48, "SL $1,738.0 (-$2.65)", mid, scale=2)
+    draw_text(buf, 16, 12, "3/4 TAKE PROFIT - RISK LOCKED -$242", dim, scale=1)
+    draw_text(buf, 16, 48, "SL $1,738.0 (-$242)", mid, scale=2)
     draw_text(buf, 16, 78, "> TP $1,692.0 (1.9%)", bright, scale=2)
-    draw_text(buf, 16, 130, "GAIN +$6.68", bright, scale=2)
-    draw_text(buf, 16, 160, "REWARD 2.52R ($35 X 10X)", mid, scale=2)
+    draw_text(buf, 16, 130, "GAIN +$608 (2.51R)", bright, scale=2)
+    draw_text(buf, 16, 160, "SIZE 18.47 ETH ($31.9K)", mid, scale=2)
     draw_text(buf, 16, 260, "SWIPE MOVE TP - TAP REVIEW - DBL BACK", dim, scale=1)
     draw_candles(
         buf, 344, 52, 220, 142, "ETH 15M", eth_bars,
@@ -203,14 +203,14 @@ def render_v4(out_dir: Path):
     )
     save_png(buf, out_dir / "g2_feed_preview.png")
 
-    # Screen 2: 1.5R Break-Even Prompt on OHLC Candlesticks
+    # Screen 2: 1.5R Break-Even Prompt on OHLC Candlesticks (1R = $242)
     buf2 = make_canvas()
-    draw_text(buf2, 16, 12, "1.5R REACHED - ETH SHORT", dim, scale=1)
+    draw_text(buf2, 16, 12, "1.5R REACHED - ETH SHORT - RISK $242", dim, scale=1)
     draw_text(buf2, 16, 48, "ETH SHORT +1.55R", bright, scale=2)
     draw_text(buf2, 16, 76, "$1,704.5 (IN $1,724.9)", mid, scale=2)
     draw_text(buf2, 16, 128, "> MOVE STOP TO BE", bright, scale=2)
-    draw_text(buf2, 16, 158, "  TAKE 50% (+$2.07)", mid, scale=2)
-    draw_text(buf2, 16, 188, "  CLOSE ALL (+$4.14)", mid, scale=2)
+    draw_text(buf2, 16, 158, "  TAKE 50% (+$188)", mid, scale=2)
+    draw_text(buf2, 16, 188, "  CLOSE ALL (+$375)", mid, scale=2)
     draw_text(buf2, 16, 260, "SWIPE PICK - TAP ACT - DBL EXIT", dim, scale=1)
     draw_candles(
         buf2, 344, 52, 220, 142, "ETH 15M", eth_bars,

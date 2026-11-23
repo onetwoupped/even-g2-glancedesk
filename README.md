@@ -3,24 +3,25 @@
 ![GlanceDesk Interactive OHLC Candlestick SL/TP Ticket](artifacts/g2_feed_preview.png)
 ![GlanceDesk 1.5R Break-Even Position Management](artifacts/g2_alert_entry.png)
 
-**A borderless OHLC candlestick trading HUD for Even G2 smart glasses — place custom Stop Loss & Take Profit directly over live 15m Hyperliquid candlesticks while seeing exact dollar risk/reward before entry, manage 1.5R Break-Even in one tap, and stay synced with Telegram.**
+**A borderless 1R risk-sized OHLC candlestick HUD for Even G2 smart glasses — lock your exact dollar risk (e.g. `$100`, `$242`, `$850`), slide Stop Loss & Take Profit over live 15m Hyperliquid candlesticks while position size auto-calculates, manage `+1.5R` Break-Even in one tap, and stay synced with Telegram.**
 
 Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 
 - **Tracks Entered (2 + Special Prize):**
-  - **Track 01 · Messaging & News:** Telegram Bot API (live alerts, `/size 35`, `/lev 10`, `/alert NEAR 4.20`, `/be`, `/half`, `/close`, `/pnl`, 1-tap natural replies)
-  - **Track 02 · Crypto & DeFi:** Hyperliquid API (all 150+ live perps, live 15m OHLC candlesticks rendered via `updateImageRawData`, interactive SL/TP risk calculator, safe paper-only R-multiple ledger)
+  - **Track 01 · Messaging & News:** Telegram Bot API (live alerts, `/risk 242`, `/alert NEAR 4.20`, `/be`, `/half`, `/close`, `/pnl`, 1-tap natural replies)
+  - **Track 02 · Crypto & DeFi:** Hyperliquid API (all 150+ live perps, live 15m OHLC candlesticks rendered via `updateImageRawData`, true 1R risk-based position sizing `qty = riskUsd / |entry - SL|`, safe paper-only R-multiple ledger)
   - **Special Prize:** Best Telegram Integration
 
 ---
 
-## Real Trader Workflow on Even G2 (No Clutter, No Fixed-RR Toys)
+## Real Trader Workflow on Even G2 (True 1R Risk Sizing — Zero Swipe Fatigue)
 1. **True OHLC Candlesticks on 4-Bit Monochrome Glass:** Bullish bars render as crisp hollow bright outlines with wicks; bearish bars render as solid filled bodies with wicks — floating borderlessly over transparent black glass (`borderWidth: 0`).
-2. **Custom Size (`$35`, `$75`, or Any Exact Amount) + Interactive SL & TP Over the Candles:**
-   - **Step 1 (`Size & Side`):** Flip `SHORT / LONG`, cycle fine margin steps (`$10..$500`, including `$35`) or set any exact dollar margin & leverage via `/size 35` / `/lev 10` in Telegram or the companion WebView.
-   - **Step 2 (`Place Stop Loss`):** Swipe up/down to slide the live **`SL` line across the actual 15m candle wicks** while watching **exact dollar risk (`-$2.65`)** recalculate instantaneously.
-   - **Step 3 (`Place Take Profit`):** Swipe up/down to slide the live **`TP` line across the candles** while seeing **exact dollar gain (`+$6.68`)** and **real `R:R` (`2.52R`)** before entering.
-   - **Step 4 (`Confirm`):** Single tap executes the simulated paper order and posts the full entry/SL/TP risk receipt to Telegram.
+2. **Exact Dollar Risk First (`1R`), Auto-Calculated Size (`qty = risk / |entry - SL|`):**
+   - Set your exact `1R` dollar risk once via Telegram (`/risk 242` or `/risk 850`) or the companion WebView input — never scroll through 20+ dollar presets on glasses.
+   - **Step 1 (`Side & Risk`):** Flip `SHORT / LONG` and toggle just **3 clean options on glasses: `0.5R / 1R / 2R`** (e.g., `$121 / $242 / $484`).
+   - **Step 2 (`Place Stop Loss`):** Swipe up/down to slide the live **`SL` line across the actual 15m candle wicks**. Your **dollar risk stays locked (`-$242`)** while **coin quantity & notional (`18.47 ETH / $31.9k`) auto-calculate** instantaneously.
+   - **Step 3 (`Place Take Profit`):** Swipe up/down to slide the live **`TP` line across the candles** while seeing **exact dollar gain (`+$608`)** and **real `R:R` (`2.51R`)** before entering.
+   - **Step 4 (`Confirm`):** Single tap executes the simulated paper order and posts the full entry/SL/TP/qty risk receipt to Telegram.
 3. **In-Lecture / Hands-Free Management (+1.5R Break-Even & 50% Partial):** When a position reaches `+1.5R`, the glasses quietly surface **`Move stop to BE`**, **`Take 50%`**, or **`Close all`** — one tap moves your stop to entry and logs it to Telegram.
 
 ---

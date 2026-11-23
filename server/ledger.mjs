@@ -12,8 +12,7 @@ export class PaperLedger {
       startingBalanceUsd: INITIAL_BALANCE_USD,
       cashUsd: INITIAL_BALANCE_USD,
       realizedPnlUsd: 0,
-      defaultMarginUsd: 35,
-      defaultLeverage: 10,
+      defaultRiskUsd: 100, // 1R dollar risk budget (user sets any exact $ via /risk or companion)
       positions: [],
       closed: [],
       alerts: [],
@@ -32,8 +31,7 @@ export class PaperLedger {
           startingBalanceUsd: raw.startingBalanceUsd ?? INITIAL_BALANCE_USD,
           cashUsd: raw.cashUsd,
           realizedPnlUsd: Number(raw.realizedPnlUsd ?? 0),
-          defaultMarginUsd: Number(raw.defaultMarginUsd ?? 35),
-          defaultLeverage: Number(raw.defaultLeverage ?? 10),
+          defaultRiskUsd: Number(raw.defaultRiskUsd ?? 100),
           positions: raw.positions,
           closed: Array.isArray(raw.closed) ? raw.closed : [],
           alerts: Array.isArray(raw.alerts) ? raw.alerts : [],
@@ -58,8 +56,7 @@ export class PaperLedger {
       startingBalanceUsd: INITIAL_BALANCE_USD,
       cashUsd: INITIAL_BALANCE_USD,
       realizedPnlUsd: 0,
-      defaultMarginUsd: 35,
-      defaultLeverage: 10,
+      defaultRiskUsd: 100,
       positions: [],
       closed: [],
       alerts: [],
@@ -69,38 +66,26 @@ export class PaperLedger {
     return this.snapshot([]);
   }
 
-  setPreferences({ marginUsd, leverage }) {
-    if (marginUsd !== undefined) {
-      const m = Number(marginUsd);
-      if (!Number.isFinite(m) || m < 1 || m > 5000) throw new Error('Margin must be between $1 and $5,000');
-      this.state.defaultMarginUsd = Number(m.toFixed(2));
+  setRiskBudget(riskUsd) {
+    const r = Number(riskUsd);
+    if (!Number.isFinite(r) || r < 1 || r > 50000) {
+      throw new Error('1R risk must be between $1 and $50,000');
     }
-    if (leverage !== undefined) {
-      const l = Number(leverage);
-      if (!Number.isFinite(l) || l < 1 || l > 50) throw new Error('Leverage must be between 1x and 50x');
-      this.state.defaultLeverage = Math.round(l);
-    }
+    this.state.defaultRiskUsd = Number(r.toFixed(2));
     this.save();
-    return { defaultMarginUsd: this.state.defaultMarginUsd, defaultLeverage: this.state.defaultLeverage };
+    return { defaultRiskUsd: this.state.defaultRiskUsd };
   }
 
   /**
-   * Open a simulated perp position with user-defined margin ($), leverage (x), exact SL and exact TP.
-   * Position notional = marginUsd * leverage.
-   * Exact dollar loss at SL = |entry - stopLoss| * sizeQty.
-   * Exact dollar profit at TP = |takeProfit - entry| * sizeQty.
+   * True Risk-Based Position Sizing (1R Sizing):
+   * User picks exact $ risk (e.g. $100, $242, $850), exact SL, and exact TP.
+   * Position size automatically solves:
+   *   sizeQty = riskUsd / |entry - stopLoss|
+   *   notionalUsd = sizeQty * entry
+   *   plannedProfitUsd = |takeProfit - entry| * sizeQty
+   * Hitting SL loses EXACTLY riskUsd.
    */
-  placePaperOrder({
-    marketId,
-    symbol,
-    side,
-    marginUsd,
-    leverage = 10,
-    notionalUsd, // Legacy fallback if marginUsd not passed
-    price,
-    stopLoss,
-    takeProfit,
-  }) {
+  placePaperOrder({ marketId, symbol, side, riskUsd, price, stopLoss, takeProfit }) {
     const cleanSide = String(side || '').toUpperCase();
     if (cleanSide !== 'LONG' && cleanSide !== 'SHORT') {
       throw new Error('Side must be LONG or SHORT');
@@ -108,16 +93,11 @@ export class PaperLedger {
     const entry = Number(price);
     if (!Number.isFinite(entry) || entry <= 0) throw new Error('Mark price must be positive');
 
-    const lev = Math.max(1, Math.min(50, Math.round(Number(leverage || 1))));
-    const margin = Number(marginUsd ?? (notionalUsd ? Number(notionalUsd) / lev : this.state.defaultMarginUsd));
-    if (!Number.isFinite(margin) || margin < 1 || margin > 5000) {
-      throw new Error('Paper margin must be between $1 and $5,000');
-    }
-    if (margin > this.state.cashUsd) {
-      throw new Error(`Insufficient paper balance ($${this.state.cashUsd.toFixed(2)} available)`);
+    const risk = Number(riskUsd ?? this.state.defaultRiskUsd);
+    if (!Number.isFinite(risk) || risk < 1 || risk > 50000) {
+      throw new Error('Risk amount must be between $1 and $50,000');
     }
 
-    const notional = Number((margin * lev).toFixed(2));
     const slPx = Number(stopLoss);
     const tpPx = Number(takeProfit);
     if (!Number.isFinite(slPx) || slPx <= 0) throw new Error('Valid Stop Loss price required');
@@ -130,23 +110,31 @@ export class PaperLedger {
       throw new Error('For SHORT: Stop Loss must be above entry and Take Profit below entry');
     }
 
-    const sizeQty = Number((notional / entry).toFixed(6));
-    const plannedLossUsd = Number((Math.abs(entry - slPx) * sizeQty).toFixed(2));
-    const plannedProfitUsd = Number((Math.abs(tpPx - entry) * sizeQty).toFixed(2));
-    const plannedRR = plannedLossUsd > 0 ? Number((plannedProfitUsd / plannedLossUsd).toFixed(2)) : 0;
+    const slDist = Math.abs(entry - slPx);
+    const tpDist = Math.abs(tpPx - entry);
+    const sizeQty = Number((risk / slDist).toFixed(6));
+    const notionalUsd = Number((sizeQty * entry).toFixed(2));
+    // Simulated isolated margin reserved (up to 50x Hyperliquid perp leverage, at least riskUsd)
+    const marginUsd = Number(Math.max(risk, notionalUsd / 50).toFixed(2));
+    if (marginUsd > this.state.cashUsd) {
+      throw new Error(`Insufficient paper balance ($${this.state.cashUsd.toFixed(0)} available, need $${marginUsd.toFixed(0)} margin)`);
+    }
+
+    const plannedProfitUsd = Number((tpDist * sizeQty).toFixed(2));
+    const plannedRR = Number((tpDist / slDist).toFixed(2));
 
     const order = {
       id: `hlp_${crypto.randomBytes(4).toString('hex')}`,
       marketId: String(marketId || `${symbol}-PERP`),
       symbol: String(symbol || marketId).replace(/-PERP$/i, '').toUpperCase(),
       side: cleanSide,
-      marginUsd: Number(margin.toFixed(2)),
-      leverage: lev,
-      notionalUsd: notional,
+      riskUsd: Number(risk.toFixed(2)),
+      marginUsd,
+      notionalUsd,
       entryPrice: entry,
       stopLoss: Number(slPx.toFixed(6)),
       takeProfit: Number(tpPx.toFixed(6)),
-      initialRiskUsd: Math.max(0.01, plannedLossUsd),
+      initialRiskUsd: Number(risk.toFixed(2)),
       plannedProfitUsd,
       plannedRR,
       isBreakEven: false,
@@ -167,21 +155,6 @@ export class PaperLedger {
     const pos = this.state.positions[idx];
     pos.stopLoss = pos.entryPrice;
     pos.isBreakEven = true;
-    this.save();
-    return { ...pos };
-  }
-
-  updatePositionLevels(positionId, { stopLoss, takeProfit }) {
-    const idx = positionId ? this.state.positions.findIndex((p) => p.id === positionId) : 0;
-    if (idx < 0 || idx >= this.state.positions.length) throw new Error('No open position found');
-    const pos = this.state.positions[idx];
-    if (stopLoss && Number(stopLoss) > 0) {
-      pos.stopLoss = Number(Number(stopLoss).toFixed(6));
-      pos.isBreakEven = Math.abs(pos.stopLoss - pos.entryPrice) / pos.entryPrice < 0.0005;
-    }
-    if (takeProfit && Number(takeProfit) > 0) {
-      pos.takeProfit = Number(Number(takeProfit).toFixed(6));
-    }
     this.save();
     return { ...pos };
   }
@@ -345,20 +318,18 @@ export class PaperLedger {
       const diff = pos.side === 'LONG' ? markPx - pos.entryPrice : pos.entryPrice - markPx;
       const unrealizedPnlUsd = Number((diff * pos.sizeQty).toFixed(2));
       const margin = pos.marginUsd ?? pos.notionalUsd;
-      const risk = Number(pos.initialRiskUsd || Math.max(0.5, margin * 0.15));
+      const risk = Number(pos.initialRiskUsd || pos.riskUsd || 100);
       const currentR = Number((unrealizedPnlUsd / risk).toFixed(2));
-      const roePct = margin > 0 ? Number(((unrealizedPnlUsd / margin) * 100).toFixed(1)) : 0;
       const markValueUsd = Number((margin + unrealizedPnlUsd).toFixed(2));
       totalMarginEquity += markValueUsd;
 
       return {
         ...pos,
+        riskUsd: risk,
         marginUsd: margin,
-        leverage: pos.leverage ?? 1,
         markPx,
         unrealizedPnlUsd,
         currentR,
-        roePct,
         markValueUsd,
       };
     });
@@ -372,8 +343,7 @@ export class PaperLedger {
       equityUsd,
       realizedPnlUsd: this.state.realizedPnlUsd,
       totalPnlUsd,
-      defaultMarginUsd: this.state.defaultMarginUsd,
-      defaultLeverage: this.state.defaultLeverage,
+      defaultRiskUsd: this.state.defaultRiskUsd,
       openCount: positions.length,
       positions,
       alerts: this.state.alerts.filter((a) => !a.triggered),

@@ -4,9 +4,8 @@ import { buildMinimalHudPage, truncate, type G2CandleChartSpec, type G2ChartLeve
 export type ViewName = 'GLANCE' | 'MANAGE' | 'TICKET_SIDE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_CONFIRM' | 'REPLY';
 export type Gesture = 'TAP' | 'DOUBLE_TAP' | 'SWIPE_UP' | 'SWIPE_DOWN';
 
-// Includes fine trader margin steps ($10..$500, including $35!) + custom value via /size or companion input
-export const MARGIN_PRESETS = [10, 15, 20, 25, 30, 35, 40, 50, 75, 100, 150, 250, 500];
-export const LEVERAGE_PRESETS = [1, 3, 5, 10, 20];
+// Clean 3-option R-multiplier on glasses (zero swipe fatigue!); base 1R is ANY exact $ via /risk or companion!
+export const RISK_MULTIPLIERS = [0.5, 1.0, 2.0];
 
 export interface AppUIState {
   view: ViewName;
@@ -14,12 +13,12 @@ export interface AppUIState {
   marketIndex: number;
   posIndex: number;
   actionIndex: number;
-  // Interactive pre-trade order ticket
+  // True 1R Risk-Based Order Ticket
   ticketSide: 'SHORT' | 'LONG';
-  ticketMarginUsd: number;
-  ticketLeverage: number;
-  ticketSlPct: number; // User-adjustable SL distance % from entry (moves live on candlesticks!)
-  ticketTpPct: number; // User-adjustable TP distance % from entry (moves live on candlesticks!)
+  baseRiskUsd: number; // Exact 1R dollar risk (e.g. $100, $242, $850)
+  riskMultIndex: number; // 0 => 0.5R, 1 => 1R, 2 => 2R
+  ticketSlPct: number; // SL distance % from entry (slides live on candlesticks)
+  ticketTpPct: number; // TP distance % from entry (slides live on candlesticks)
   toast: string;
   data: BackendState | null;
   candles: CandleSeries | null;
@@ -31,6 +30,17 @@ export function formatPx(px: number): string {
   return `$${px.toFixed(4)}`;
 }
 
+export function formatNotional(usd: number): string {
+  if (usd >= 1000) return `$${(usd / 1000).toFixed(1)}k`;
+  return `$${usd.toFixed(0)}`;
+}
+
+export function formatQty(qty: number): string {
+  if (qty >= 100) return qty.toFixed(1);
+  if (qty >= 1) return qty.toFixed(2);
+  return qty.toFixed(4);
+}
+
 export function createInitialUIState(): AppUIState {
   return {
     view: 'GLANCE',
@@ -38,37 +48,47 @@ export function createInitialUIState(): AppUIState {
     marketIndex: 0,
     posIndex: 0,
     actionIndex: 0,
-    ticketSide: 'SHORT',
-    ticketMarginUsd: 35,
-    ticketLeverage: 10,
-    ticketSlPct: 1.0,
-    ticketTpPct: 2.2,
+    ticketSide: 'LONG',
+    baseRiskUsd: 100,
+    riskMultIndex: 1, // 1.0R default
+    ticketSlPct: 0.75,
+    ticketTpPct: 2.0,
     toast: '',
     data: null,
     candles: null,
   };
 }
 
-export function computeTicketMath(st: AppUIState, entryPx: number) {
-  const notionalUsd = st.ticketMarginUsd * st.ticketLeverage;
-  const qty = entryPx > 0 ? notionalUsd / entryPx : 0;
+/**
+ * True Risk-Based Position Math:
+ * - Risk ($ loss if SL hits) is FIXED to exact chosen dollar risk (e.g. $100, $242, $850).
+ * - Moving SL tighter increases coin qty/notional; moving SL wider decreases qty/notional.
+ * - Hitting SL ALWAYS loses exactly `riskUsd`.
+ */
+export function computeRiskTicket(st: AppUIState, entryPx: number) {
+  const mult = RISK_MULTIPLIERS[st.riskMultIndex % RISK_MULTIPLIERS.length];
+  const riskUsd = Number((st.baseRiskUsd * mult).toFixed(2));
   const slFrac = st.ticketSlPct / 100;
   const tpFrac = st.ticketTpPct / 100;
 
   const stopLoss = st.ticketSide === 'SHORT' ? entryPx * (1 + slFrac) : entryPx * (1 - slFrac);
   const takeProfit = st.ticketSide === 'SHORT' ? entryPx * (1 - tpFrac) : entryPx * (1 + tpFrac);
 
-  const lossUsd = Math.abs(entryPx - stopLoss) * qty;
-  const profitUsd = Math.abs(takeProfit - entryPx) * qty;
-  const rr = lossUsd > 0 ? profitUsd / lossUsd : 0;
+  const slDist = Math.abs(entryPx - stopLoss);
+  const tpDist = Math.abs(takeProfit - entryPx);
+  const qty = slDist > 0 ? riskUsd / slDist : 0;
+  const notionalUsd = qty * entryPx;
+  const profitUsd = tpDist * qty;
+  const rr = slDist > 0 ? tpDist / slDist : 0;
 
   return {
     entryPx,
-    notionalUsd,
-    qty,
+    mult,
+    riskUsd,
+    qty: Number(qty.toFixed(4)),
+    notionalUsd: Number(notionalUsd.toFixed(2)),
     stopLoss,
     takeProfit,
-    lossUsd: Number(lossUsd.toFixed(2)),
     profitUsd: Number(profitUsd.toFixed(2)),
     rr: Number(rr.toFixed(2)),
   };
@@ -143,16 +163,16 @@ export function getManageActions(st: AppUIState): HudAction[] {
       label: pos.isBreakEven ? `Stop at BE (${formatPx(pos.entryPrice)})` : `Move stop to BE (${formatPx(pos.entryPrice)})`,
       kind: 'MOVE_BE',
     },
-    { label: `Take 50% (${hSign}$${halfPnl.toFixed(2)})`, kind: 'TAKE_HALF' },
-    { label: `Close all (${fSign}$${pos.unrealizedPnlUsd.toFixed(2)})`, kind: 'CLOSE_POS' },
+    { label: `Take 50% (${hSign}$${halfPnl.toFixed(1)})`, kind: 'TAKE_HALF' },
+    { label: `Close all (${fSign}$${pos.unrealizedPnlUsd.toFixed(1)})`, kind: 'CLOSE_POS' },
     { label: 'New trade setup', kind: 'GO_TICKET' },
   ];
 }
 
 export function getAlertActions(): HudAction[] {
   return [
-    { label: 'Short (set SL & TP)', kind: 'START_SHORT' },
-    { label: 'Long (set SL & TP)', kind: 'START_LONG' },
+    { label: 'Short (place SL & TP)', kind: 'START_SHORT' },
+    { label: 'Long (place SL & TP)', kind: 'START_LONG' },
     { label: 'Dismiss alert', kind: 'DISMISS_ALERT' },
   ];
 }
@@ -165,7 +185,7 @@ export function getReplyActions(st: AppUIState): HudAction[] {
     'Stop moved to BE',
   ];
   return [
-    { label: 'Set up trade (SL / TP)', kind: 'GO_TICKET' as const },
+    { label: 'Set up trade (Risk + SL/TP)', kind: 'GO_TICKET' as const },
     ...smart.map((label) => ({ label, kind: 'SEND_TG_REPLY' as const, payload: label })),
     { label: 'Manage open position', kind: 'GO_MANAGE' as const },
   ];
@@ -204,7 +224,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
       const sign = mkt.change24hPct >= 0 ? '+' : '';
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()}`,
+        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()} · 1R $${st.baseRiskUsd}`,
         main: [
           `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%`,
           alert.note ? truncate(alert.note, 28) : `level ${formatPx(alert.targetPrice)}`,
@@ -255,9 +275,9 @@ export function renderPage(st: AppUIState): G2PageSpec {
 
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `${truncate(msg.sender, 18)} · ${fmtAge(msg.timestamp)}${st.toast ? ` · ${st.toast}` : ''}`,
+        eyebrow: `${truncate(msg.sender, 16)} · ${fmtAge(msg.timestamp)} · 1R $${st.baseRiskUsd}${st.toast ? ` · ${st.toast}` : ''}`,
         main: [
-          truncate(msg.text, 70),
+          truncate(msg.text, 68),
           '',
           posLine,
           pos ? '› Tap to manage' : '› Tap to trade / reply',
@@ -272,10 +292,10 @@ export function renderPage(st: AppUIState): G2PageSpec {
     const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
     return buildMinimalHudPage({
       view: 'GLANCE',
-      eyebrow: `glancedesk · ${mkt ? mkt.symbol.toLowerCase() : 'ready'}`,
+      eyebrow: `glancedesk · 1R $${st.baseRiskUsd}`,
       main: [
         mkt ? `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%` : 'Connecting...',
-        st.toast || 'Send /size 35 or /alert NEAR 4.20',
+        st.toast || 'Telegram: /risk 242 or /alert NEAR 4.20',
         '',
         pos ? `Open: ${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '› Tap to set up trade',
       ].join('\n'),
@@ -284,38 +304,38 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 2. STEP 1/4 — SIDE & MARGIN SIZE ($35 or any custom amount)
+  // 2. STEP 1/4 — SIDE & RISK (0.5R / 1R / 2R of your exact 1R dollar risk!)
   if (st.view === 'TICKET_SIDE') {
     const px = mkt?.markPx || 0;
-    const notional = st.ticketMarginUsd * st.ticketLeverage;
+    const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
       view: 'TICKET_SIDE',
-      eyebrow: `1/4 size · ${mkt?.symbol.toLowerCase() || 'perp'} · ${st.ticketLeverage}x`,
+      eyebrow: `1/4 risk · ${mkt?.symbol.toLowerCase() || 'perp'} · 1R = $${st.baseRiskUsd}`,
       main: [
         `${mkt?.symbol || 'PERP'} ${formatPx(px)}`,
         '',
-        `› ${st.ticketSide}  $${st.ticketMarginUsd} margin`,
-        `  Size $${notional} (${st.ticketLeverage}x)`,
+        `› ${st.ticketSide}  Risk -$${calc.riskUsd} (${calc.mult}R)`,
+        `  Auto-sizes to exact SL`,
         `  Tap to place Stop Loss`,
       ].join('\n'),
-      hint: 'up flip side · dn size · tap next',
+      hint: 'up flip side · dn 0.5/1/2R · tap SL',
       chart: buildChart(st, mkt, px > 0 ? [{ price: px, label: 'NOW' }] : undefined),
     });
   }
 
-  // 3. STEP 2/4 — INTERACTIVE STOP LOSS ON LIVE CANDLESTICKS (SHOWS EXACT $ LOSS)
+  // 3. STEP 2/4 — PLACE STOP LOSS ON CANDLES (RISK LOCKED, POSITION SIZE AUTO-CALCULATES!)
   if (st.view === 'TICKET_SL') {
     const px = mkt?.markPx || 0;
-    const calc = computeTicketMath(st, px);
+    const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
       view: 'TICKET_SL',
-      eyebrow: `2/4 stop loss · ${mkt?.symbol.toLowerCase() || 'perp'} ${st.ticketSide.toLowerCase()}`,
+      eyebrow: `2/4 stop loss · risk locked -$${calc.riskUsd}`,
       main: [
         `Entry ${formatPx(px)}`,
         `› SL ${formatPx(calc.stopLoss)} (${st.ticketSlPct.toFixed(2)}%)`,
         '',
-        `Risk -$${calc.lossUsd.toFixed(2)}`,
-        `($${st.ticketMarginUsd} × ${st.ticketLeverage}x)`,
+        `Max loss -$${calc.riskUsd}`,
+        `Size ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
       ].join('\n'),
       hint: 'swipe move SL · tap set TP · dbl back',
       chart: buildChart(st, mkt, [
@@ -325,18 +345,18 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 4. STEP 3/4 — INTERACTIVE TAKE PROFIT ON LIVE CANDLESTICKS (SHOWS EXACT $ GAIN & R:R)
+  // 4. STEP 3/4 — PLACE TAKE PROFIT ON CANDLES (EXACT $ GAIN & R:R!)
   if (st.view === 'TICKET_TP') {
     const px = mkt?.markPx || 0;
-    const calc = computeTicketMath(st, px);
+    const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
       view: 'TICKET_TP',
-      eyebrow: `3/4 take profit · ${mkt?.symbol.toLowerCase() || 'perp'} ${st.ticketSide.toLowerCase()}`,
+      eyebrow: `3/4 take profit · risk -$${calc.riskUsd}`,
       main: [
-        `SL ${formatPx(calc.stopLoss)} (-$${calc.lossUsd.toFixed(2)})`,
+        `SL ${formatPx(calc.stopLoss)} (-$${calc.riskUsd})`,
         `› TP ${formatPx(calc.takeProfit)} (${st.ticketTpPct.toFixed(2)}%)`,
         '',
-        `Gain +$${calc.profitUsd.toFixed(2)}`,
+        `Gain +$${calc.profitUsd.toFixed(0)}`,
         `Reward ${calc.rr}R`,
       ].join('\n'),
       hint: 'swipe move TP · tap review · dbl back',
@@ -348,18 +368,18 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 5. STEP 4/4 — FINAL CONFIRMATION WITH FULL RISK / REWARD PROOF
+  // 5. STEP 4/4 — CONFIRM EXACT RISK-SIZED ORDER
   if (st.view === 'TICKET_CONFIRM') {
     const px = mkt?.markPx || 0;
-    const calc = computeTicketMath(st, px);
+    const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
       view: 'TICKET_CONFIRM',
-      eyebrow: `4/4 confirm paper · ${st.ticketMarginUsd}$ × ${st.ticketLeverage}x`,
+      eyebrow: `4/4 confirm · size ${formatNotional(calc.notionalUsd)}`,
       main: [
         `${mkt?.symbol || 'PERP'} ${st.ticketSide} @ ${formatPx(px)}`,
-        `SL ${formatPx(calc.stopLoss)} (-$${calc.lossUsd.toFixed(2)})`,
-        `TP ${formatPx(calc.takeProfit)} (+$${calc.profitUsd.toFixed(2)})`,
-        `R:R ${calc.rr}R`,
+        `SL ${formatPx(calc.stopLoss)} (-$${calc.riskUsd})`,
+        `TP ${formatPx(calc.takeProfit)} (+$${calc.profitUsd.toFixed(0)} · ${calc.rr}R)`,
+        `Qty ${formatQty(calc.qty)} ${mkt?.symbol || ''}`,
         '› Tap to execute paper',
       ].join('\n'),
       hint: 'tap confirm · dbl edit TP',
@@ -388,7 +408,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
     return buildMinimalHudPage({
       view: 'MANAGE',
       eyebrow: pos
-        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} · $${pos.marginUsd}×${pos.leverage}`
+        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} · risk $${pos.riskUsd}`
         : 'positions · none open',
       main: [
         pos ? `${pos.symbol} ${pos.side} ${rStr}` : 'No open paper positions',

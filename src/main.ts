@@ -5,16 +5,15 @@ import {
   fetchCandles,
   moveStopToBE,
   placePaperOrder,
-  savePrefs,
+  saveRiskBudget,
   sendTelegramReply,
   takePartialProfit,
 } from './api';
 import { connectEvenBridge, type GlassesHost } from './bridge';
 import { drawG2Preview } from './preview';
 import {
-  LEVERAGE_PRESETS,
-  MARGIN_PRESETS,
-  computeTicketMath,
+  RISK_MULTIPLIERS,
+  computeRiskTicket,
   createInitialUIState,
   formatPx,
   getActiveFeedMessage,
@@ -34,8 +33,7 @@ const badgeEl = document.getElementById('runtime-badge') as HTMLElement;
 const viewEl = document.getElementById('view-indicator') as HTMLElement;
 const statusEl = document.getElementById('status-panel') as HTMLElement;
 const logEl = document.getElementById('event-log') as HTMLElement;
-const marginInput = document.getElementById('inp-margin') as HTMLInputElement | null;
-const levInput = document.getElementById('inp-lev') as HTMLInputElement | null;
+const riskInput = document.getElementById('inp-risk') as HTMLInputElement | null;
 
 const ui = createInitialUIState();
 let host: GlassesHost | null = null;
@@ -57,7 +55,7 @@ function updateStatusBar(): void {
     `(${tg.activeChatId ? tg.activeChatTitle || tg.activeChatId : 'waiting'}) · ` +
     `<strong>Hyperliquid:</strong> ${ui.data.markets.length} perps · ` +
     `<strong>Paper:</strong> $${port.cashUsd.toFixed(0)} (${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}) · ` +
-    `<strong>Default:</strong> $${ui.ticketMarginUsd} × ${ui.ticketLeverage}x`;
+    `<strong>1R Risk:</strong> $${ui.baseRiskUsd}`;
 }
 
 async function ensureActiveCandles(): Promise<void> {
@@ -80,18 +78,13 @@ async function paint(forceRebuild = false): Promise<void> {
 
 async function syncState(refresh = false): Promise<void> {
   try {
-    const prevDefMargin = ui.data?.portfolio.defaultMarginUsd;
-    const prevDefLev = ui.data?.portfolio.defaultLeverage;
+    const prevRisk = ui.data?.portfolio.defaultRiskUsd;
     ui.data = await fetchBackendState(refresh);
 
-    // Sync /size or /lev changes made in Telegram
-    if (ui.data.portfolio.defaultMarginUsd && ui.data.portfolio.defaultMarginUsd !== prevDefMargin) {
-      ui.ticketMarginUsd = ui.data.portfolio.defaultMarginUsd;
-      if (marginInput) marginInput.value = String(ui.ticketMarginUsd);
-    }
-    if (ui.data.portfolio.defaultLeverage && ui.data.portfolio.defaultLeverage !== prevDefLev) {
-      ui.ticketLeverage = ui.data.portfolio.defaultLeverage;
-      if (levInput) levInput.value = String(ui.ticketLeverage);
+    // Sync /risk 242 changes made in Telegram live into glasses HUD
+    if (ui.data.portfolio.defaultRiskUsd && ui.data.portfolio.defaultRiskUsd !== prevRisk) {
+      ui.baseRiskUsd = ui.data.portfolio.defaultRiskUsd;
+      if (riskInput) riskInput.value = String(ui.baseRiskUsd);
     }
 
     if (!ui.candles && ui.data.candles?.bars?.length >= 2) {
@@ -103,16 +96,6 @@ async function syncState(refresh = false): Promise<void> {
     log(`Sync error: ${String((err as Error)?.message || err)}`);
     await paint(false);
   }
-}
-
-function nextMarginPreset(current: number): number {
-  const idx = MARGIN_PRESETS.findIndex((v) => v > current);
-  return idx >= 0 ? MARGIN_PRESETS[idx] : MARGIN_PRESETS[0];
-}
-
-function nextLevPreset(current: number): number {
-  const idx = LEVERAGE_PRESETS.findIndex((v) => v > current);
-  return idx >= 0 ? LEVERAGE_PRESETS[idx] : LEVERAGE_PRESETS[0];
 }
 
 async function executeAction(action: HudAction): Promise<void> {
@@ -250,14 +233,13 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 1/4: Side & Margin Size ($35 etc.)
+  // STEP 1/4: Side & 0.5R / 1R / 2R Risk Toggle (3 instant options, zero swipe fatigue!)
   if (ui.view === 'TICKET_SIDE') {
     if (g === 'SWIPE_UP') {
       ui.ticketSide = ui.ticketSide === 'SHORT' ? 'LONG' : 'SHORT';
       await paint(false);
     } else if (g === 'SWIPE_DOWN') {
-      ui.ticketMarginUsd = nextMarginPreset(ui.ticketMarginUsd);
-      if (marginInput) marginInput.value = String(ui.ticketMarginUsd);
+      ui.riskMultIndex = (ui.riskMultIndex + 1) % RISK_MULTIPLIERS.length;
       await paint(false);
     } else if (g === 'TAP') {
       ui.view = 'TICKET_SL';
@@ -269,11 +251,10 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 2/4: Interactive Stop Loss on Live Candlesticks (SWIPE UP moves SL higher on chart, DOWN moves lower)
+  // STEP 2/4: Slide SL on candles -> Risk stays LOCKED, Qty auto-sizes!
   if (ui.view === 'TICKET_SL') {
-    const step = 0.25; // 0.25% precision ticks across the candles
+    const step = 0.25;
     if (g === 'SWIPE_UP') {
-      // Moving SL UP on chart: for SHORT = wider SL (+step), for LONG = tighter SL (-step)
       ui.ticketSlPct =
         ui.ticketSide === 'SHORT'
           ? Math.min(12, Number((ui.ticketSlPct + step).toFixed(2)))
@@ -295,11 +276,10 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 3/4: Interactive Take Profit on Live Candlesticks (SWIPE UP moves TP higher on chart, DOWN moves lower)
+  // STEP 3/4: Slide TP on candles -> Exact $ gain & R:R update live!
   if (ui.view === 'TICKET_TP') {
     const step = 0.35;
     if (g === 'SWIPE_UP') {
-      // Moving TP UP on chart: for SHORT = closer TP (-step), for LONG = farther TP (+step)
       ui.ticketTpPct =
         ui.ticketSide === 'SHORT'
           ? Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)))
@@ -321,7 +301,7 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 4/4: Execute custom paper trade with exact SL & TP
+  // STEP 4/4: Execute risk-sized order
   if (ui.view === 'TICKET_CONFIRM') {
     if (g === 'DOUBLE_TAP') {
       ui.view = 'TICKET_TP';
@@ -336,14 +316,13 @@ async function handleGesture(g: Gesture): Promise<void> {
         await paint(true);
         return;
       }
-      const calc = computeTicketMath(ui, mkt.markPx);
+      const calc = computeRiskTicket(ui, mkt.markPx);
       try {
         const res = await placePaperOrder({
           marketId: mkt.id,
           symbol: mkt.symbol,
           side: ui.ticketSide,
-          marginUsd: ui.ticketMarginUsd,
-          leverage: ui.ticketLeverage,
+          riskUsd: calc.riskUsd,
           price: mkt.markPx,
           stopLoss: calc.stopLoss,
           takeProfit: calc.takeProfit,
@@ -351,8 +330,8 @@ async function handleGesture(g: Gesture): Promise<void> {
         });
         if (ui.data) ui.data.portfolio = res.portfolio;
         if (alert) await dismissAlert(alert.id);
-        ui.toast = `${ui.ticketSide} ${mkt.symbol} $${ui.ticketMarginUsd}`;
-        log(`Opened ${ui.ticketSide} ${mkt.symbol} $${ui.ticketMarginUsd}×${ui.ticketLeverage} | SL ${formatPx(calc.stopLoss)} | TP ${formatPx(calc.takeProfit)}`);
+        ui.toast = `${ui.ticketSide} ${mkt.symbol} (-$${calc.riskUsd})`;
+        log(`Opened ${ui.ticketSide} ${mkt.symbol} | Risk -$${calc.riskUsd} | Qty ${calc.qty} | SL ${formatPx(calc.stopLoss)} | TP ${formatPx(calc.takeProfit)}`);
         ui.view = 'MANAGE';
         ui.actionIndex = 0;
         await paint(true);
@@ -409,10 +388,8 @@ async function boot(): Promise<void> {
     else if (id === 2) ui.view = 'TICKET_SIDE';
     else if (id === 3) ui.view = 'MANAGE';
     else if (id === 4) {
-      ui.ticketLeverage = nextLevPreset(ui.ticketLeverage);
-      if (levInput) levInput.value = String(ui.ticketLeverage);
-      void savePrefs({ leverage: ui.ticketLeverage });
-      log(`Leverage set to ${ui.ticketLeverage}x`);
+      ui.riskMultIndex = (ui.riskMultIndex + 1) % RISK_MULTIPLIERS.length;
+      log(`Risk multiplier -> ${RISK_MULTIPLIERS[ui.riskMultIndex]}R`);
     }
     void paint(true);
   });
@@ -421,18 +398,17 @@ async function boot(): Promise<void> {
   document.getElementById('btn-tap')?.addEventListener('click', () => void handleGesture('TAP'));
   document.getElementById('btn-down')?.addEventListener('click', () => void handleGesture('SWIPE_DOWN'));
   document.getElementById('btn-dbl')?.addEventListener('click', () => void handleGesture('DOUBLE_TAP'));
-  document.getElementById('btn-apply-prefs')?.addEventListener('click', async () => {
-    const m = Number(marginInput?.value || ui.ticketMarginUsd);
-    const l = Number(levInput?.value || ui.ticketLeverage);
-    if (Number.isFinite(m) && m >= 1) ui.ticketMarginUsd = m;
-    if (Number.isFinite(l) && l >= 1) ui.ticketLeverage = Math.round(l);
+  document.getElementById('btn-apply-risk')?.addEventListener('click', async () => {
+    const r = Number(riskInput?.value || ui.baseRiskUsd);
+    if (!Number.isFinite(r) || r < 1) return;
+    ui.baseRiskUsd = r;
     try {
-      const res = await savePrefs({ marginUsd: ui.ticketMarginUsd, leverage: ui.ticketLeverage });
+      const res = await saveRiskBudget(r);
       if (ui.data) ui.data.portfolio = res.portfolio;
-      log(`Custom size saved: $${ui.ticketMarginUsd} × ${ui.ticketLeverage}x`);
+      log(`1R risk budget set to $${r} (0.5R=$${(r * 0.5).toFixed(0)}, 2R=$${(r * 2).toFixed(0)})`);
       await paint(false);
     } catch (err) {
-      log(`Pref error: ${String((err as Error)?.message || err)}`);
+      log(`Risk error: ${String((err as Error)?.message || err)}`);
     }
   });
 

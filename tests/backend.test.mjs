@@ -31,7 +31,7 @@ test('app.json satisfies Even Hub manifest & QA rules', () => {
   }
 });
 
-test('Official Even Hub SDK validateEvenHubPageContainer approves v4 OHLC candlestick HUD layout', () => {
+test('Official Even Hub SDK validateEvenHubPageContainer approves v5 1R risk-sized candlestick HUD layout', () => {
   const result = validateEvenHubPageContainer({
     textObject: [
       new TextContainerProperty({
@@ -47,7 +47,7 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v4 OHLC candle
         paddingLength: 0,
         textColor: 1,
         isEventCapture: 0,
-        content: '2/4 stop loss · eth short',
+        content: '2/4 stop loss · risk locked -$242',
       }),
       new TextContainerProperty({
         containerID: 2,
@@ -62,7 +62,7 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v4 OHLC candle
         paddingLength: 0,
         textColor: 4,
         isEventCapture: 1,
-        content: 'Entry $1,724.9\n› SL $1,742.1 (1.00%)\n\nRisk -$3.50\n($35 × 10x)',
+        content: 'Entry $1,724.9\n› SL $1,737.8 (0.75%)\n\nMax loss -$242\nSize 18.70 ETH ($32.3k)',
       }),
       new TextContainerProperty({
         containerID: 3,
@@ -95,7 +95,7 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v4 OHLC candle
         new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
         new MenuItemProperty({ itemID: 2, itemName: 'New Trade (SL/TP)' }),
         new MenuItemProperty({ itemID: 3, itemName: 'Manage Position' }),
-        new MenuItemProperty({ itemID: 4, itemName: 'Cycle Leverage' }),
+        new MenuItemProperty({ itemID: 4, itemName: 'Toggle 0.5/1/2R' }),
       ],
     }),
   });
@@ -123,30 +123,31 @@ test('Smart replies stay concise and human', () => {
   assert.ok(replies[0].includes('NEAR'));
 });
 
-test('PaperLedger computes exact custom margin ($35 x 10x), custom SL/TP loss & gain, 1.5R BE, and 50% partial', () => {
+test('PaperLedger computes true 1R risk-based sizing ($242 / $850 exact risk), 1.5R BE, partial, and exact SL loss', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glancedesk-'));
   const file = path.join(tmpDir, 'ledger.json');
   try {
     const ledger = new PaperLedger(file);
-    ledger.setPreferences({ marginUsd: 35, leverage: 10 });
+    const pref = ledger.setRiskBudget(242);
+    assert.equal(pref.defaultRiskUsd, 242);
 
-    // Custom SHORT NEAR: $35 margin x 10x = $350 notional @ $4.00 => 87.5 NEAR
-    // Custom SL = $4.08 => exact loss = $0.08 * 87.5 = $7.00
-    // Custom TP = $3.80 => exact profit = $0.20 * 87.5 = $17.50 (2.5R)
+    // True 1R risk sizing: SHORT NEAR @ $4.00, SL = $4.08 ($0.08 dist), TP = $3.80 ($0.20 dist)
+    // Auto-sized qty = $242 / $0.08 = 3025 NEAR ($12,100 notional)
+    // Exact loss at SL = -$242.00; exact profit at TP = +$605.00 (2.5R)
     const ord = ledger.placePaperOrder({
       marketId: 'NEAR-PERP',
       symbol: 'NEAR',
       side: 'SHORT',
-      marginUsd: 35,
-      leverage: 10,
+      riskUsd: 242,
       price: 4.0,
       stopLoss: 4.08,
       takeProfit: 3.8,
     });
-    assert.equal(ord.marginUsd, 35);
-    assert.equal(ord.notionalUsd, 350);
-    assert.equal(ord.initialRiskUsd, 7);
-    assert.equal(ord.plannedProfitUsd, 17.5);
+    assert.equal(ord.riskUsd, 242);
+    assert.equal(ord.initialRiskUsd, 242);
+    assert.equal(ord.sizeQty, 3025);
+    assert.equal(ord.notionalUsd, 12100);
+    assert.equal(ord.plannedProfitUsd, 605);
     assert.equal(ord.plannedRR, 2.5);
 
     // Reject invalid SL direction for SHORT (SL below entry)
@@ -155,15 +156,14 @@ test('PaperLedger computes exact custom margin ($35 x 10x), custom SL/TP loss & 
         marketId: 'NEAR-PERP',
         symbol: 'NEAR',
         side: 'SHORT',
-        marginUsd: 35,
-        leverage: 10,
+        riskUsd: 242,
         price: 4.0,
         stopLoss: 3.9,
         takeProfit: 3.8,
       });
     }, /Stop Loss must be above entry/);
 
-    // Price drops to $3.88 => +$10.50 PnL / $7.00 risk = +1.5R -> emits R_TARGET_1_5
+    // Price drops to $3.88 => +$363.00 PnL / $242.00 risk = +1.5R -> emits R_TARGET_1_5
     const triggers = ledger.evaluateTriggers([{ symbol: 'NEAR', markPx: 3.88 }]);
     assert.ok(triggers.some((e) => e.kind === 'R_TARGET_1_5'));
 
@@ -172,16 +172,35 @@ test('PaperLedger computes exact custom margin ($35 x 10x), custom SL/TP loss & 
     assert.equal(bePos.stopLoss, 4.0);
     assert.equal(bePos.isBreakEven, true);
 
-    // Take 50% profit at $3.88 (+$5.25 realized)
+    // Take 50% profit at $3.88 (+$181.50 realized)
     const partial = ledger.takePartialProfit(ord.id, 0.5, 3.88);
-    assert.equal(partial.realizedPnlUsd, 5.25);
+    assert.equal(partial.realizedPnlUsd, 181.5);
 
     // Price bounces back to $4.00 BE -> closes remaining 50% at $0 extra loss
     const stopEv = ledger.evaluateTriggers([{ symbol: 'NEAR', markPx: 4.0 }]);
     assert.ok(stopEv.some((e) => e.kind === 'STOP_HIT' && e.closed.reason === 'BREAK_EVEN'));
-    const finalSnap = ledger.snapshot([{ symbol: 'NEAR', markPx: 4.0 }]);
+
+    // Second trade: exact $850 risk on tight 0.5% ETH LONG stop -> hitting SL loses EXACTLY -$850.00
+    ledger.setRiskBudget(850);
+    const ethOrd = ledger.placePaperOrder({
+      marketId: 'ETH-PERP',
+      symbol: 'ETH',
+      side: 'LONG',
+      riskUsd: 850,
+      price: 2000,
+      stopLoss: 1990, // $10 stop distance => qty = 85 ETH ($170,000 notional, $3,400 margin @ 50x)
+      takeProfit: 2030, // $30 target => +$2,550 (3R)
+    });
+    assert.equal(ethOrd.sizeQty, 85);
+    assert.equal(ethOrd.plannedProfitUsd, 2550);
+    assert.equal(ethOrd.plannedRR, 3);
+
+    const slHit = ledger.evaluateTriggers([{ symbol: 'ETH', markPx: 1990 }]);
+    assert.ok(slHit.some((e) => e.kind === 'STOP_HIT' && e.closed.reason === 'STOP_LOSS' && e.closed.realizedPnlUsd === -850));
+
+    const finalSnap = ledger.snapshot([{ symbol: 'ETH', markPx: 1990 }]);
     assert.equal(finalSnap.openCount, 0);
-    assert.equal(finalSnap.realizedPnlUsd, 5.25);
+    assert.equal(finalSnap.realizedPnlUsd, Number((181.5 - 850).toFixed(2)));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

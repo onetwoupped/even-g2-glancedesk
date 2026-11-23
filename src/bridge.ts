@@ -54,7 +54,7 @@ function buildContextMenu(): MenuContainerProperty {
       new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
       new MenuItemProperty({ itemID: 2, itemName: 'New Trade (SL/TP)' }),
       new MenuItemProperty({ itemID: 3, itemName: 'Manage Position' }),
-      new MenuItemProperty({ itemID: 4, itemName: 'Cycle Leverage' }),
+      new MenuItemProperty({ itemID: 4, itemName: 'Toggle 0.5/1/2R' }),
     ],
   });
 }
