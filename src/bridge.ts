@@ -1,15 +1,21 @@
 import {
   AudioInputSource,
   CreateStartUpPageContainer,
+  ImageContainerProperty,
+  ImageRawDataUpdate,
+  MenuContainerProperty,
+  MenuItemProperty,
   OsEventTypeList,
   RebuildPageContainer,
   TextContainerProperty,
   TextContainerUpgrade,
+  validateEvenHubPageContainer,
   waitForEvenAppBridge,
   type EvenAppBridge,
   type EvenHubEvent,
 } from '@evenrealities/even_hub_sdk';
 import type { G2PageSpec } from './layout';
+import { renderSparklinePngBytes } from './sparkline';
 import type { Gesture } from './state';
 
 export interface GlassesHost {
@@ -19,6 +25,7 @@ export interface GlassesHost {
   startMic(onPcmChunk: (chunk: Uint8Array) => void): Promise<void>;
   stopMic(): Promise<void>;
   onGesture(handler: (g: Gesture) => void): void;
+  onMenuSelect(handler: (itemID: number) => void): void;
 }
 
 function mapOsEventToGesture(eventType: number | undefined): Gesture | null {
@@ -43,7 +50,21 @@ function mapOsEventToGesture(eventType: number | undefined): Gesture | null {
 }
 
 export function isEvenWebView(): boolean {
-  return typeof window !== 'undefined' && Boolean((window as unknown as { flutter_inappwebview?: unknown }).flutter_inappwebview);
+  return (
+    typeof window !== 'undefined' &&
+    Boolean((window as unknown as { flutter_inappwebview?: unknown }).flutter_inappwebview)
+  );
+}
+
+function buildContextMenu(): MenuContainerProperty {
+  return new MenuContainerProperty({
+    menuItems: [
+      new MenuItemProperty({ itemID: 1, itemName: 'Feed' }),
+      new MenuItemProperty({ itemID: 2, itemName: 'Paper Order' }),
+      new MenuItemProperty({ itemID: 3, itemName: 'Portfolio' }),
+      new MenuItemProperty({ itemID: 4, itemName: 'Refresh Live' }),
+    ],
+  });
 }
 
 export async function connectEvenBridge(
@@ -51,8 +72,9 @@ export async function connectEvenBridge(
   onLog: (msg: string) => void
 ): Promise<GlassesHost> {
   if (!isEvenWebView()) {
-    onLog('Running in Browser 576x288 Preview Mode (open in @evenrealities/evenhub-simulator for live SDK bridge).');
+    onLog('Running in Browser 576x288 Preview Mode (launch Even Hub Simulator for native SDK bridge).');
     let gestureCb: ((g: Gesture) => void) | null = null;
+    let menuCb: ((id: number) => void) | null = null;
     return {
       mode: 'BROWSER_PREVIEW',
       async render(page: G2PageSpec) {
@@ -62,13 +84,16 @@ export async function connectEvenBridge(
         onLog('QA Check: shutDownPageContainer(1) invoked on root page (native exit dialog).');
       },
       async startMic(onPcmChunk) {
-        // Emit 0.5s of clean synthetic silence PCM in browser preview
         onPcmChunk(new Uint8Array(16000));
       },
       async stopMic() {},
       onGesture(handler) {
         gestureCb = handler;
         (window as unknown as { __g2Emit?: (g: Gesture) => void }).__g2Emit = (g) => gestureCb?.(g);
+      },
+      onMenuSelect(handler) {
+        menuCb = handler;
+        (window as unknown as { __g2Menu?: (id: number) => void }).__g2Menu = (id) => menuCb?.(id);
       },
     };
   }
@@ -78,7 +103,11 @@ export async function connectEvenBridge(
 
   let initialized = false;
   let lastView: string | null = null;
+  let lastHasImage = false;
+  let lastSparkKey = '';
+  let imageSending = false;
   let gestureHandler: ((g: Gesture) => void) | null = null;
+  let menuHandler: ((id: number) => void) | null = null;
   let pcmHandler: ((chunk: Uint8Array) => void) | null = null;
 
   bridge.onEvenHubEvent((event: EvenHubEvent) => {
@@ -87,7 +116,12 @@ export async function connectEvenBridge(
       return;
     }
 
-    // Long-press events always arrive on sysEvent
+    const menuEv = (event as unknown as { menuItemClickEvent?: { itemID?: number } }).menuItemClickEvent;
+    if (menuEv?.itemID) {
+      menuHandler?.(menuEv.itemID);
+      return;
+    }
+
     if (event.sysEvent) {
       const sysGesture = mapOsEventToGesture(event.sysEvent.eventType);
       if (sysGesture === 'LONG_PRESS_START' || sysGesture === 'LONG_PRESS_END') {
@@ -119,31 +153,88 @@ export async function connectEvenBridge(
           borderColor: c.borderColor,
           borderRadius: c.borderRadius,
           paddingLength: c.paddingLength,
+          textColor: c.textColor,
           isEventCapture: c.isEventCapture,
           content: c.content,
         })
     );
   }
 
+  function toSdkImageContainers(page: G2PageSpec): ImageContainerProperty[] | undefined {
+    if (!page.imageObject || page.imageObject.length === 0) return undefined;
+    return page.imageObject.map(
+      (img) =>
+        new ImageContainerProperty({
+          containerID: img.containerID,
+          containerName: img.containerName,
+          xPosition: img.xPosition,
+          yPosition: img.yPosition,
+          width: img.width,
+          height: img.height,
+        })
+    );
+  }
+
+  async function pushSparklineImages(page: G2PageSpec, force = false): Promise<void> {
+    if (!page.imageObject || page.imageObject.length === 0 || imageSending) return;
+    for (const img of page.imageObject) {
+      if (!img.sparkline || img.sparkline.closes.length < 2) continue;
+      const key = `${img.sparkline.symbol}:${img.sparkline.closes.slice(-3).join(',')}`;
+      if (!force && key === lastSparkKey) continue;
+      imageSending = true;
+      try {
+        const pngBytes = await renderSparklinePngBytes(
+          img.width,
+          img.height,
+          img.sparkline.symbol,
+          img.sparkline.closes,
+          img.sparkline.change24hPct
+        );
+        if (pngBytes.length > 0) {
+          await bridge.updateImageRawData(
+            new ImageRawDataUpdate({
+              containerID: img.containerID,
+              containerName: img.containerName,
+              imageData: pngBytes,
+            })
+          );
+          lastSparkKey = key;
+        }
+      } finally {
+        imageSending = false;
+      }
+    }
+  }
+
   return {
     mode: 'EVEN_G2_SDK',
     async render(page: G2PageSpec, forceRebuild = false) {
       onPreviewPage(page);
-      if (!initialized) {
-        const res = await bridge.createStartUpPageContainer(
-          new CreateStartUpPageContainer({
-            containerTotalNum: page.containerTotalNum,
-            textObject: toSdkTextContainers(page),
-          })
-        );
-        initialized = true;
-        lastView = page.view;
-        onLog(`createStartUpPageContainer -> code ${res}`);
+      const hasImage = Boolean(page.imageObject && page.imageObject.length > 0);
+      const payloadShape = {
+        containerTotalNum: page.containerTotalNum,
+        textObject: toSdkTextContainers(page),
+        imageObject: toSdkImageContainers(page),
+        menuObject: buildContextMenu(),
+      };
+
+      const check = validateEvenHubPageContainer(payloadShape);
+      if (!check.valid) {
+        onLog(`SDK validation blocked page: ${check.message}`);
         return;
       }
 
-      if (!forceRebuild && lastView === page.view) {
-        // Flicker-free in-place text update on hardware
+      if (!initialized) {
+        const res = await bridge.createStartUpPageContainer(new CreateStartUpPageContainer(payloadShape));
+        initialized = true;
+        lastView = page.view;
+        lastHasImage = hasImage;
+        onLog(`createStartUpPageContainer -> code ${res}`);
+        await pushSparklineImages(page, true);
+        return;
+      }
+
+      if (!forceRebuild && lastView === page.view && lastHasImage === hasImage) {
         for (const c of page.textObject) {
           await bridge.textContainerUpgrade(
             new TextContainerUpgrade({
@@ -152,22 +243,20 @@ export async function connectEvenBridge(
               content: c.content,
               contentOffset: 0,
               contentLength: c.content.length,
+              textColor: c.textColor,
             })
           );
         }
+        await pushSparklineImages(page, false);
         return;
       }
 
-      await bridge.rebuildPageContainer(
-        new RebuildPageContainer({
-          containerTotalNum: page.containerTotalNum,
-          textObject: toSdkTextContainers(page),
-        })
-      );
+      await bridge.rebuildPageContainer(new RebuildPageContainer(payloadShape));
       lastView = page.view;
+      lastHasImage = hasImage;
+      await pushSparklineImages(page, true);
     },
     async exitRoot() {
-      // Mandatory Even Hub QA rule: mode 1 shows system exit confirmation dialog on root page
       await bridge.shutDownPageContainer(1);
     },
     async startMic(onPcmChunk) {
@@ -180,6 +269,9 @@ export async function connectEvenBridge(
     },
     onGesture(handler) {
       gestureHandler = handler;
+    },
+    onMenuSelect(handler) {
+      menuHandler = handler;
     },
   };
 }

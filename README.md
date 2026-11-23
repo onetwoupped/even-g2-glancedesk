@@ -1,12 +1,14 @@
 # GlanceDesk for Even G2
 
-**Read VIP Telegram alerts, reply in one tap or by voice, and act on live Hyperliquid perp markets (paper-only) — directly from your Even G2 smart glasses.**
+![GlanceDesk Even G2 576x288 Display](artifacts/g2_feed_preview.png)
+
+**Read VIP Telegram alerts, inspect live 24h Hyperliquid pixel sparklines, reply in 1 tap or by voice, and open/close live-priced paper perps — directly from your Even G2 smart glasses.**
 
 Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 
 - **Tracks Entered (2 + Special Prize):**
-  - **Track 01 · Messaging & News:** Telegram Bot API (real live group read & write)
-  - **Track 02 · Crypto & DeFi:** Hyperliquid API (real live perpetual mark prices, 24h deltas & funding rates + safe paper-trading ledger)
+  - **Track 01 · Messaging & News:** Telegram Bot API (real live group read & write + `/price`, `/alert`, `/pnl`, `/close` slash commands)
+  - **Track 02 · Crypto & DeFi:** Hyperliquid API (real live perpetual mark prices, 24h `candleSnapshot` pixel sparkline via `updateImageRawData`, funding rates + safe paper-trading ledger)
   - **Special Prize:** Best Telegram Integration
 
 ---
@@ -32,8 +34,9 @@ flowchart LR
 ```
 
 ### Even Hub Hardware & QA Compliance
-- **Exact 576 × 288 3-zone grid** (`hdr`, `main`, `act`), `containerName <= 16` chars, strictly one `isEventCapture: 1` container per screen.
-- **Flicker-free updates:** `createStartUpPageContainer` once at boot, `textContainerUpgrade` for live mark/message updates, `rebuildPageContainer` only on view switches.
+- **Exact 576 × 288 layout validated by official SDK (`validateEvenHubPageContainer`):** 3 text zones (`hdr`, `main`, `act`) + `192 × 140` 4-bit pixel sparkline (`imageObject` via `updateImageRawData`) + native `menuObject` contextual menu (`Feed`, `Paper Order`, `Portfolio`, `Refresh Live`).
+- **Official 0..4 Text Brightness Hierarchy:** `textColor: 4` on primary headers/prices and `textColor: 2` on subtle gesture hints.
+- **Flicker-free updates:** `createStartUpPageContainer` once at boot, `textContainerUpgrade` for live mark/message updates, sequential `updateImageRawData` pacing, `rebuildPageContainer` only on view switches.
 - **SDK Quirk Safe:** Handles both `OsEventTypeList.CLICK_EVENT` (`0`) and `undefined` normalization, plus `sysEvent` long-press pairs.
 - **Store QA Root Exit:** Double-tap on the root `FEED` screen calls `shutDownPageContainer(1)` (mandatory native exit confirmation dialog).
 - **Zero Secrets in WebView:** Telegram Bot Token stays strictly in server-side `.env`; WebView only talks to the whitelisted CORS backend origin declared in `app.json`.

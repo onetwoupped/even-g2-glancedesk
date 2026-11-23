@@ -9,6 +9,14 @@ export interface MarketItem {
   maxLeverage: number;
 }
 
+export interface CandleSeries {
+  symbol: string;
+  fetchedAt: number;
+  closes: number[];
+  high: number;
+  low: number;
+}
+
 export interface FeedMessage {
   id: string;
   messageId: number;
@@ -37,13 +45,25 @@ export interface PaperPosition {
   createdAt: string;
 }
 
+export interface PriceAlert {
+  id: string;
+  symbol: string;
+  direction: 'ABOVE' | 'BELOW';
+  targetPrice: number;
+  triggered: boolean;
+  triggeredPrice?: number;
+}
+
 export interface PortfolioSnapshot {
   mode: 'PAPER_ONLY';
   cashUsd: number;
   equityUsd: number;
+  realizedPnlUsd: number;
   totalPnlUsd: number;
   openCount: number;
   positions: PaperPosition[];
+  alerts: PriceAlert[];
+  recentTriggeredAlerts: PriceAlert[];
   updatedAt: string;
 }
 
@@ -58,6 +78,7 @@ export interface BackendState {
   };
   markets: MarketItem[];
   feed: FeedMessage[];
+  candles: CandleSeries;
   portfolio: PortfolioSnapshot;
   updatedAt: string;
 }
@@ -88,6 +109,13 @@ export async function fetchBackendState(refresh = false): Promise<BackendState> 
   return requestJson<BackendState>(`/api/state${refresh ? '?refresh=1' : ''}`);
 }
 
+export async function fetchCandles(symbol: string): Promise<CandleSeries> {
+  const res = await requestJson<{ ok: boolean; candles: CandleSeries }>(
+    `/api/candles?symbol=${encodeURIComponent(symbol)}`
+  );
+  return res.candles;
+}
+
 export async function sendTelegramReply(params: {
   chatId?: string;
   text: string;
@@ -108,6 +136,21 @@ export async function placePaperOrder(params: {
   notifyTelegram?: boolean;
 }): Promise<{ ok: boolean; portfolio: PortfolioSnapshot; receiptSent: boolean }> {
   return requestJson('/api/paper/order', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function closePaperPosition(params: {
+  positionId?: string;
+  notifyTelegram?: boolean;
+}): Promise<{
+  ok: boolean;
+  closed: { symbol: string; side: string; realizedPnlUsd: number; exitPrice: number };
+  portfolio: PortfolioSnapshot;
+  receiptSent: boolean;
+}> {
+  return requestJson('/api/paper/close', {
     method: 'POST',
     body: JSON.stringify(params),
   });

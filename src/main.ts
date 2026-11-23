@@ -1,5 +1,7 @@
 import {
+  closePaperPosition,
   fetchBackendState,
+  fetchCandles,
   placePaperOrder,
   sendTelegramReply,
   sendVoiceReply,
@@ -44,7 +46,19 @@ function updateStatusBar(): void {
     `(${tg.activeChatId ? `chat ${tg.activeChatTitle || tg.activeChatId}` : 'waiting for 1st group msg'}) · ` +
     `<strong>Hyperliquid:</strong> ${ui.data.markets.length} live perps · ` +
     `<strong>Paper Cash:</strong> $${port.cashUsd.toFixed(2)} · ` +
-    `<strong>PnL:</strong> ${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)} (PAPER ONLY)`;
+    `<strong>PnL:</strong> ${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)} · ` +
+    `<strong>Alerts:</strong> ${port.alerts.length} active (PAPER ONLY)`;
+}
+
+async function ensureActiveCandles(): Promise<void> {
+  const mkt = getActiveMarket(ui);
+  if (!mkt) return;
+  if (ui.candles && ui.candles.symbol === mkt.symbol && ui.candles.closes.length >= 2) return;
+  try {
+    ui.candles = await fetchCandles(mkt.symbol);
+  } catch {
+    // Non-fatal; text-only fallback still renders cleanly
+  }
 }
 
 async function paint(forceRebuild = false): Promise<void> {
@@ -60,6 +74,10 @@ async function paint(forceRebuild = false): Promise<void> {
 async function syncState(refresh = false): Promise<void> {
   try {
     ui.data = await fetchBackendState(refresh);
+    if (!ui.candles && ui.data.candles?.closes?.length >= 2) {
+      ui.candles = ui.data.candles;
+    }
+    await ensureActiveCandles();
     await paint(false);
   } catch (err) {
     log(`Sync error: ${String((err as Error)?.message || err)}`);
@@ -131,16 +149,19 @@ async function handleGesture(g: Gesture): Promise<void> {
     if (g === 'SWIPE_DOWN') {
       if ((ui.data?.feed.length || 0) > 0) ui.feedIndex += 1;
       else ui.marketIndex += 1;
+      await ensureActiveCandles();
       await paint(false);
     } else if (g === 'SWIPE_UP') {
       if ((ui.data?.feed.length || 0) > 0) ui.feedIndex -= 1;
       else ui.marketIndex -= 1;
+      await ensureActiveCandles();
       await paint(false);
     } else if (g === 'TAP') {
       if (getActiveFeedMessage(ui)) {
         ui.replyOptionIndex = 0;
         ui.view = 'REPLY';
       } else {
+        await ensureActiveCandles();
         ui.view = 'ORDER';
       }
       await paint(true);
@@ -164,6 +185,7 @@ async function handleGesture(g: Gesture): Promise<void> {
     } else if (g === 'TAP') {
       const selected = opts[ui.replyOptionIndex % opts.length];
       if (selected.kind === 'GO_ORDER') {
+        await ensureActiveCandles();
         ui.view = 'ORDER';
         await paint(true);
         return;
@@ -235,14 +257,30 @@ async function handleGesture(g: Gesture): Promise<void> {
   }
 
   if (ui.view === 'PORT') {
-    if (g === 'SWIPE_DOWN') {
-      ui.portIndex += 1;
+    const positions = ui.data?.portfolio.positions || [];
+    if (g === 'SWIPE_DOWN' && positions.length > 0) {
+      ui.portIndex = (ui.portIndex + 1) % positions.length;
       await paint(false);
-    } else if (g === 'SWIPE_UP') {
-      ui.portIndex = Math.max(0, ui.portIndex - 1);
+    } else if (g === 'SWIPE_UP' && positions.length > 0) {
+      ui.portIndex = (ui.portIndex - 1 + positions.length) % positions.length;
       await paint(false);
     } else if (g === 'TAP') {
-      await syncState(true);
+      if (positions.length > 0) {
+        const target = positions[ui.portIndex % positions.length];
+        try {
+          const res = await closePaperPosition({ positionId: target.id, notifyTelegram: true });
+          if (ui.data) ui.data.portfolio = res.portfolio;
+          const sign = res.closed.realizedPnlUsd >= 0 ? '+' : '';
+          ui.toast = `CLOSED ${res.closed.symbol} (${sign}$${res.closed.realizedPnlUsd.toFixed(2)})`;
+          log(`Closed ${res.closed.symbol} @ ${formatPx(res.closed.exitPrice)} | Realized: ${sign}$${res.closed.realizedPnlUsd.toFixed(2)}`);
+          ui.portIndex = 0;
+          await paint(false);
+        } catch (err) {
+          log(`Close error: ${String((err as Error)?.message || err)}`);
+        }
+      } else {
+        await syncState(true);
+      }
     } else if (g === 'DOUBLE_TAP') {
       ui.view = 'FEED';
       await paint(true);
@@ -254,6 +292,13 @@ async function boot(): Promise<void> {
   host = await connectEvenBridge((page) => drawG2Preview(canvas, page), log);
   badgeEl.textContent = host.mode === 'EVEN_G2_SDK' ? 'EVEN G2 LIVE SDK' : 'G2 SIM PREVIEW';
   host.onGesture((g) => void handleGesture(g));
+  host.onMenuSelect((id) => {
+    if (id === 1) ui.view = 'FEED';
+    else if (id === 2) ui.view = 'ORDER';
+    else if (id === 3) ui.view = 'PORT';
+    else if (id === 4) void syncState(true);
+    void paint(true);
+  });
 
   document.getElementById('btn-up')?.addEventListener('click', () => void handleGesture('SWIPE_UP'));
   document.getElementById('btn-tap')?.addEventListener('click', () => void handleGesture('TAP'));

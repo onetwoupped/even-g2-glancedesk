@@ -11,7 +11,10 @@ export class PaperLedger {
       mode: 'PAPER_ONLY',
       startingBalanceUsd: INITIAL_BALANCE_USD,
       cashUsd: INITIAL_BALANCE_USD,
+      realizedPnlUsd: 0,
       positions: [],
+      closed: [],
+      alerts: [],
       updatedAt: new Date().toISOString(),
     };
     this.load();
@@ -22,7 +25,16 @@ export class PaperLedger {
     try {
       const raw = JSON.parse(fs.readFileSync(this.storagePath, 'utf8'));
       if (raw && typeof raw.cashUsd === 'number' && Array.isArray(raw.positions)) {
-        this.state = raw;
+        this.state = {
+          mode: 'PAPER_ONLY',
+          startingBalanceUsd: raw.startingBalanceUsd ?? INITIAL_BALANCE_USD,
+          cashUsd: raw.cashUsd,
+          realizedPnlUsd: Number(raw.realizedPnlUsd ?? 0),
+          positions: raw.positions,
+          closed: Array.isArray(raw.closed) ? raw.closed : [],
+          alerts: Array.isArray(raw.alerts) ? raw.alerts : [],
+          updatedAt: raw.updatedAt || new Date().toISOString(),
+        };
       }
     } catch {
       // Keep clean default state
@@ -41,7 +53,10 @@ export class PaperLedger {
       mode: 'PAPER_ONLY',
       startingBalanceUsd: INITIAL_BALANCE_USD,
       cashUsd: INITIAL_BALANCE_USD,
+      realizedPnlUsd: 0,
       positions: [],
+      closed: [],
+      alerts: [],
       updatedAt: new Date().toISOString(),
     };
     this.save();
@@ -69,7 +84,7 @@ export class PaperLedger {
     const order = {
       id: `hlp_${crypto.randomBytes(4).toString('hex')}`,
       marketId: String(marketId || `${symbol}-PERP`),
-      symbol: String(symbol || marketId).replace(/-PERP$/i, ''),
+      symbol: String(symbol || marketId).replace(/-PERP$/i, '').toUpperCase(),
       side: cleanSide,
       notionalUsd: Number(notional.toFixed(2)),
       entryPrice: fillPrice,
@@ -81,6 +96,82 @@ export class PaperLedger {
     this.state.positions.unshift(order);
     this.save();
     return order;
+  }
+
+  closePosition(positionId, closePrice) {
+    const idx = positionId
+      ? this.state.positions.findIndex((p) => p.id === positionId)
+      : 0;
+    if (idx < 0 || idx >= this.state.positions.length) {
+      throw new Error('No open paper position found to close');
+    }
+    const pos = this.state.positions[idx];
+    const exitPx = Number(closePrice);
+    if (!Number.isFinite(exitPx) || exitPx <= 0) {
+      throw new Error('Close price must be positive');
+    }
+
+    const diff = pos.side === 'LONG' ? exitPx - pos.entryPrice : pos.entryPrice - exitPx;
+    const realizedPnlUsd = Number((diff * pos.sizeQty).toFixed(2));
+    const returnedCash = Math.max(0, Number((pos.notionalUsd + realizedPnlUsd).toFixed(2)));
+
+    this.state.positions.splice(idx, 1);
+    this.state.cashUsd = Number((this.state.cashUsd + returnedCash).toFixed(2));
+    this.state.realizedPnlUsd = Number((this.state.realizedPnlUsd + realizedPnlUsd).toFixed(2));
+
+    const closedRecord = {
+      ...pos,
+      exitPrice: exitPx,
+      realizedPnlUsd,
+      closedAt: new Date().toISOString(),
+    };
+    this.state.closed.unshift(closedRecord);
+    this.state.closed = this.state.closed.slice(0, 25);
+    this.save();
+    return closedRecord;
+  }
+
+  addAlert({ symbol, targetPrice, currentPrice }) {
+    const sym = String(symbol || '').replace(/-PERP$/i, '').toUpperCase();
+    const target = Number(targetPrice);
+    if (!sym || !Number.isFinite(target) || target <= 0) {
+      throw new Error('Invalid alert parameters');
+    }
+    const direction = Number.isFinite(currentPrice) && target < currentPrice ? 'BELOW' : 'ABOVE';
+    const alert = {
+      id: `al_${crypto.randomBytes(3).toString('hex')}`,
+      symbol: sym,
+      direction,
+      targetPrice: target,
+      triggered: false,
+      triggeredAt: null,
+      createdAt: new Date().toISOString(),
+    };
+    this.state.alerts.unshift(alert);
+    this.state.alerts = this.state.alerts.slice(0, 15);
+    this.save();
+    return alert;
+  }
+
+  evaluateAlerts(liveMarkets = []) {
+    const bySym = new Map(liveMarkets.map((m) => [String(m.symbol).toUpperCase(), m]));
+    const newlyTriggered = [];
+    for (const al of this.state.alerts) {
+      if (al.triggered) continue;
+      const m = bySym.get(al.symbol);
+      if (!m) continue;
+      const hit =
+        (al.direction === 'ABOVE' && m.markPx >= al.targetPrice) ||
+        (al.direction === 'BELOW' && m.markPx <= al.targetPrice);
+      if (hit) {
+        al.triggered = true;
+        al.triggeredAt = new Date().toISOString();
+        al.triggeredPrice = m.markPx;
+        newlyTriggered.push({ ...al, markPx: m.markPx });
+      }
+    }
+    if (newlyTriggered.length > 0) this.save();
+    return newlyTriggered;
   }
 
   snapshot(liveMarkets = []) {
@@ -112,9 +203,12 @@ export class PaperLedger {
       mode: 'PAPER_ONLY',
       cashUsd: this.state.cashUsd,
       equityUsd,
+      realizedPnlUsd: this.state.realizedPnlUsd,
       totalPnlUsd,
       openCount: positions.length,
       positions,
+      alerts: this.state.alerts.filter((a) => !a.triggered),
+      recentTriggeredAlerts: this.state.alerts.filter((a) => a.triggered).slice(0, 3),
       updatedAt: this.state.updatedAt,
     };
   }

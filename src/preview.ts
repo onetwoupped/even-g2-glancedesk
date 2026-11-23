@@ -1,11 +1,18 @@
 import { G2_HEIGHT, G2_WIDTH, type G2PageSpec } from './layout';
+import { drawSparklineOnCanvas } from './sparkline';
 
-function levelToGreen(level: number): string {
+function level15ToGreen(level: number): string {
   const clamped = Math.max(0, Math.min(15, Math.round(level)));
   const g = Math.round((clamped / 15) * 255);
   const r = Math.round(g * 0.18);
   const b = Math.round(g * 0.42);
   return `rgb(${r}, ${g}, ${b})`;
+}
+
+function textBrightness4ToGreen(level: number): string {
+  const map = [45, 95, 155, 205, 255];
+  const g = map[Math.max(0, Math.min(4, Math.round(level)))];
+  return `rgb(${Math.round(g * 0.18)}, ${g}, ${Math.round(g * 0.42)})`;
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
@@ -40,22 +47,27 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, G2_WIDTH, G2_HEIGHT);
 
-  ctx.font = '16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  ctx.font = '15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.textBaseline = 'top';
 
   for (const c of page.textObject) {
     if (c.borderWidth > 0) {
-      ctx.strokeStyle = levelToGreen(c.borderColor);
+      ctx.strokeStyle = level15ToGreen(c.borderColor);
       ctx.lineWidth = c.borderWidth;
       ctx.strokeRect(c.xPosition + 1, c.yPosition + 1, c.width - 2, c.height - 2);
     }
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(c.xPosition + c.paddingLength, c.yPosition + c.paddingLength, c.width - c.paddingLength * 2, c.height - c.paddingLength * 2);
+    ctx.rect(
+      c.xPosition + c.paddingLength,
+      c.yPosition + c.paddingLength,
+      c.width - c.paddingLength * 2,
+      c.height - c.paddingLength * 2
+    );
     ctx.clip();
 
-    ctx.fillStyle = levelToGreen(c.textColor);
+    ctx.fillStyle = textBrightness4ToGreen(c.textColor);
     const maxW = Math.max(20, c.width - c.paddingLength * 2);
     const lines = wrapText(ctx, c.content, maxW);
     let y = c.yPosition + c.paddingLength;
@@ -65,5 +77,21 @@ export function drawG2Preview(canvas: HTMLCanvasElement, page: G2PageSpec): void
       y += 22;
     }
     ctx.restore();
+  }
+
+  for (const img of page.imageObject || []) {
+    if (img.sparkline) {
+      drawSparklineOnCanvas(
+        ctx,
+        img.xPosition,
+        img.yPosition,
+        img.width,
+        img.height,
+        img.sparkline.symbol,
+        img.sparkline.closes,
+        img.sparkline.change24hPct,
+        true
+      );
+    }
   }
 }

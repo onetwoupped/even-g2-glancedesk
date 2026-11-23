@@ -87,6 +87,7 @@ export class HyperliquidClient {
     this.cache = [];
     this.fetchedAt = 0;
     this.lastError = null;
+    this.candleCache = new Map(); // symbol -> { fetchedAt, closes, high, low }
   }
 
   async getMarkets(force = false) {
@@ -100,14 +101,12 @@ export class HyperliquidClient {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'GlanceDesk-EvenG2/1.0',
+          'User-Agent': 'GlanceDesk-EvenG2/2.0',
         },
         body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
         signal: AbortSignal.timeout(10000),
       });
-      if (!resp.ok) {
-        throw new Error(`Hyperliquid HTTP ${resp.status}`);
-      }
+      if (!resp.ok) throw new Error(`Hyperliquid HTTP ${resp.status}`);
       const data = await resp.json();
       const normalized = normalizeHyperliquidMarkets(data).slice(0, 25);
       if (normalized.length > 0) {
@@ -120,5 +119,50 @@ export class HyperliquidClient {
       this.lastError = String(err?.message || err);
       return { markets: this.cache, cached: true, source: 'hyperliquid_cache', lastError: this.lastError };
     }
+  }
+
+  async getCandles24h(symbol) {
+    const coin = String(symbol || 'BTC').replace(/-PERP$/i, '').toUpperCase();
+    const now = Date.now();
+    const existing = this.candleCache.get(coin);
+    if (existing && now - existing.fetchedAt < 60000) {
+      return existing;
+    }
+
+    try {
+      const startTime = now - 24 * 60 * 60 * 1000;
+      const resp = await fetch(HL_INFO_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': 'GlanceDesk-EvenG2/2.0',
+        },
+        body: JSON.stringify({
+          type: 'candleSnapshot',
+          req: { coin, interval: '1h', startTime, endTime: now },
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) throw new Error(`Hyperliquid candles HTTP ${resp.status}`);
+      const raw = await resp.json();
+      const closes = (Array.isArray(raw) ? raw : [])
+        .map((c) => Number(c.c))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (closes.length >= 2) {
+        const entry = {
+          symbol: coin,
+          fetchedAt: now,
+          closes,
+          high: Math.max(...closes),
+          low: Math.min(...closes),
+        };
+        this.candleCache.set(coin, entry);
+        return entry;
+      }
+    } catch {
+      // Fallback to cached or null
+    }
+    return existing || { symbol: coin, fetchedAt: 0, closes: [], high: 0, low: 0 };
   }
 }

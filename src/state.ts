@@ -1,4 +1,4 @@
-import type { BackendState, FeedMessage, MarketItem } from './api';
+import type { BackendState, CandleSeries, FeedMessage, MarketItem } from './api';
 import { buildThreeZonePage, truncate, type G2PageSpec } from './layout';
 
 export type ViewName = 'FEED' | 'REPLY' | 'ORDER' | 'PORT' | 'VOICE';
@@ -15,6 +15,7 @@ export interface AppUIState {
   toast: string;
   voiceCapturing: boolean;
   data: BackendState | null;
+  candles: CandleSeries | null;
 }
 
 export const PAPER_NOTIONALS = [100, 250, 500];
@@ -37,6 +38,7 @@ export function createInitialUIState(): AppUIState {
     toast: '',
     voiceCapturing: false,
     data: null,
+    candles: null,
   };
 }
 
@@ -65,8 +67,8 @@ export function getReplyOptions(st: AppUIState): Array<{ label: string; kind: 'T
   ];
   return [
     ...smart.map((label) => ({ label, kind: 'TG_REPLY' as const })),
-    { label: 'Open Paper Order (Hyperliquid)', kind: 'GO_ORDER' as const },
-    { label: 'View Paper Portfolio & Live PnL', kind: 'GO_PORT' as const },
+    { label: 'Open Paper Order + Live Chart', kind: 'GO_ORDER' as const },
+    { label: 'View Paper Portfolio / Close Pos', kind: 'GO_PORT' as const },
   ];
 }
 
@@ -82,6 +84,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
   const port = st.data?.portfolio;
   const bal = port ? `$${port.cashUsd.toFixed(0)}` : '$10000';
   const pnl = port ? `${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}` : '+$0.00';
+  const activeAlert = port?.recentTriggeredAlerts?.[0];
 
   if (st.view === 'VOICE') {
     const msg = getActiveFeedMessage(st);
@@ -102,22 +105,28 @@ export function renderPage(st: AppUIState): G2PageSpec {
   if (st.view === 'FEED') {
     const msg = getActiveFeedMessage(st);
     const mkt = getActiveMarket(st);
+    const candles = st.candles || st.data?.candles || null;
+    const sparkline =
+      mkt && candles && candles.symbol === mkt.symbol && candles.closes.length >= 2
+        ? { symbol: mkt.symbol, closes: candles.closes, change24hPct: mkt.change24hPct }
+        : null;
+
     if (!msg) {
       const mSign = mkt && mkt.change24hPct >= 0 ? '+' : '';
       const mLine = mkt
-        ? `${mkt.symbol}-PERP  ${formatPx(mkt.markPx)}  (${mSign}${mkt.change24hPct}% 24h)\nFunding: ${mkt.fundingHourlyPct >= 0 ? '+' : ''}${mkt.fundingHourlyPct}%/hr · Vol: $${Math.round(mkt.volume24hUsd / 1e6)}M`
+        ? `${mkt.symbol}-PERP ${formatPx(mkt.markPx)}\n24h: ${mSign}${mkt.change24hPct}% · Fund: ${mkt.fundingHourlyPct}%`
         : 'Loading live Hyperliquid perps...';
       return buildThreeZonePage({
         view: 'FEED',
-        header: `GLANCEDESK · TG READY · BAL ${bal}`,
+        header: `GLANCEDESK · TG READY · ${bal}`,
         body: [
-          st.toast ? `[!] ${st.toast}` : `Bot @${st.data?.telegram.botUsername || 'sezirneonbot'} connected.`,
-          'Send a message in Telegram (e.g. "SOL breakout") to link live perps.',
+          st.toast ? `[!] ${st.toast}` : `Bot @${st.data?.telegram.botUsername || 'sezirneonbot'} live.`,
+          'Send msg in TG (or /price /alert).',
           '',
-          'HYPERLIQUID LIVE:',
           mLine,
         ].join('\n'),
-        footer: 'TAP: Paper Perp · SWIPE: Next Perp · DBL: Exit',
+        footer: 'TAP: Paper Perp · SWIPE: Next · DBL: Exit',
+        sparkline,
       });
     }
 
@@ -125,20 +134,25 @@ export function renderPage(st: AppUIState): G2PageSpec {
     const pos = (((st.feedIndex % total) + total) % total) + 1;
     const mSign = mkt && mkt.change24hPct >= 0 ? '+' : '';
     const mktLine = mkt
-      ? `HL: ${mkt.symbol}-PERP ${formatPx(mkt.markPx)} (${mSign}${mkt.change24hPct}%) · F:${mkt.fundingHourlyPct >= 0 ? '+' : ''}${mkt.fundingHourlyPct}%`
-      : 'HL: Syncing live mark...';
+      ? `${mkt.symbol}-PERP ${formatPx(mkt.markPx)} (${mSign}${mkt.change24hPct}%)`
+      : 'Syncing Hyperliquid...';
+    const hdr = activeAlert
+      ? `ALERT ${activeAlert.symbol} ${activeAlert.direction} ${formatPx(activeAlert.targetPrice)}!`
+      : `TG [${pos}/${total}] ${truncate(msg.sender, 16)} · ${fmtAge(msg.timestamp)}`;
+
     return buildThreeZonePage({
       view: 'FEED',
-      header: `TG [${pos}/${total}] ${truncate(msg.sender, 18)} · ${fmtAge(msg.timestamp)}`,
+      header: hdr,
       body: [
         st.toast ? `✓ ${st.toast}` : '',
-        truncate(msg.text, 150),
+        truncate(msg.text, 95),
         '',
         mktLine,
       ]
         .filter(Boolean)
         .join('\n'),
       footer: 'TAP: Reply/Trade · SWIPE: Next · HOLD: Voice · DBL: Exit',
+      sparkline,
     });
   }
 
@@ -146,7 +160,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
     const msg = getActiveFeedMessage(st);
     const opts = getReplyOptions(st);
     const idx = ((st.replyOptionIndex % opts.length) + opts.length) % opts.length;
-    const lines = opts.map((o, i) => `${i === idx ? '▶ ' : '  '}${truncate(o.label, 48)}`);
+    const lines = opts.map((o, i) => `${i === idx ? '▶ ' : '  '}${truncate(o.label, 46)}`);
     return buildThreeZonePage({
       view: 'REPLY',
       header: `ACT ON: ${msg ? truncate(msg.sender, 24) : 'TELEGRAM'}`,
@@ -159,45 +173,56 @@ export function renderPage(st: AppUIState): G2PageSpec {
     const mkt = getActiveMarket(st);
     const notional = PAPER_NOTIONALS[st.orderStakeIndex % PAPER_NOTIONALS.length];
     const px = mkt ? mkt.markPx : 0;
-    const qty = px > 0 ? (notional / px).toFixed(4) : '0';
+    const qty = px > 0 ? (notional / px).toFixed(3) : '0';
     const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
+    const candles = st.candles || st.data?.candles || null;
+    const sparkline =
+      mkt && candles && candles.symbol === mkt.symbol && candles.closes.length >= 2
+        ? { symbol: mkt.symbol, closes: candles.closes, change24hPct: mkt.change24hPct }
+        : null;
+
     return buildThreeZonePage({
       view: 'ORDER',
       header: `HYPERLIQUID PAPER (SIM) · ${bal}`,
       body: [
-        mkt
-          ? `${mkt.symbol}-PERP · Mark ${formatPx(mkt.markPx)} (${sign}${mkt.change24hPct}% 24h)`
-          : 'No live market loaded',
+        mkt ? `${mkt.symbol}-PERP · ${formatPx(mkt.markPx)}` : 'No live market loaded',
+        mkt ? `24h: ${sign}${mkt.change24hPct}% · Fund: ${mkt.fundingHourlyPct}%` : '',
         '',
-        `ACTION: [ ${st.orderSide} $${notional} ]  (${qty} ${mkt?.symbol || ''})`,
-        `Simulated paper trade · Receipt auto-posts to Telegram`,
-      ].join('\n'),
-      footer: 'SWIPE: Flip LONG/SHORT · TAP: Confirm · DBL: Back',
+        `[ ${st.orderSide} $${notional} ] (${qty} ${mkt?.symbol || ''})`,
+        'Simulated only · Receipt -> TG',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      footer: 'SWIPE: Flip Side/Size · TAP: Confirm · DBL: Back',
+      sparkline,
     });
   }
 
-  // PORT view
+  // PORT view — Single TAP closes selected open position!
   const positions = port?.positions || [];
   let bodyLines: string[];
   if (positions.length === 0) {
     bodyLines = [
-      'No open paper perp positions yet.',
-      `Cash: ${bal} (Simulated USD)`,
+      'No open paper perp positions.',
+      `Cash: ${bal} | Realized: $${(port?.realizedPnlUsd ?? 0).toFixed(2)}`,
       'Go back to FEED -> TAP -> Open Paper Order.',
     ];
   } else {
-    const start = ((st.portIndex % positions.length) + positions.length) % positions.length;
+    const selectedIdx = ((st.portIndex % positions.length) + positions.length) % positions.length;
+    const start = Math.max(0, selectedIdx - 1);
     const slice = positions.slice(start, start + 3);
-    bodyLines = slice.map((p) => {
+    bodyLines = slice.map((p, idx) => {
+      const absIdx = start + idx;
       const sign = p.unrealizedPnlUsd >= 0 ? '+' : '';
-      return `${p.side} ${p.symbol} $${p.notionalUsd} @${formatPx(p.entryPrice)}→${formatPx(p.markPx)} (${sign}$${p.unrealizedPnlUsd.toFixed(2)})`;
+      const cur = absIdx === selectedIdx ? '▶ ' : '  ';
+      return `${cur}${p.side} ${p.symbol} $${p.notionalUsd} @${formatPx(p.entryPrice)}→${formatPx(p.markPx)} (${sign}$${p.unrealizedPnlUsd.toFixed(2)})`;
     });
   }
 
   return buildThreeZonePage({
     view: 'PORT',
-    header: `PAPER PORTFOLIO · PNL ${pnl} · ${bal}`,
+    header: `PORTFOLIO · PNL ${pnl} · ${bal}`,
     body: bodyLines.join('\n'),
-    footer: 'SWIPE: Scroll · TAP: Refresh Live Mark · DBL: Feed',
+    footer: positions.length > 0 ? 'SWIPE: Select · TAP: Close Pos + TG · DBL: Feed' : 'TAP: Refresh · DBL: Feed',
   });
 }

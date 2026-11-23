@@ -37,6 +37,7 @@ const telegram = new TelegramService({
 });
 const hyperliquid = new HyperliquidClient(10000);
 const ledger = new PaperLedger(path.join(RUNTIME_DIR, 'ledger.json'));
+const handledCommands = new Set();
 
 function setCorsHeaders(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -120,6 +121,79 @@ async function handleVoiceTranscription(pcmBase64, fallbackText) {
   };
 }
 
+async function processTelegramCommands(messages, markets) {
+  if (!telegram.configured) return;
+  for (const msg of messages) {
+    if (msg.direction !== 'IN' || !msg.text.startsWith('/') || handledCommands.has(msg.id)) continue;
+    handledCommands.add(msg.id);
+    const parts = msg.text.trim().split(/\s+/);
+    const cmd = parts[0].split('@')[0].toLowerCase();
+
+    try {
+      if (cmd === '/price' && parts[1]) {
+        const sym = parts[1].replace(/^\$/, '').toUpperCase();
+        const m = markets.find((x) => x.symbol.toUpperCase() === sym);
+        const text = m
+          ? `[GlanceDesk] ${m.symbol}-PERP: ${formatPrice(m.markPx)} (${m.change24hPct >= 0 ? '+' : ''}${m.change24hPct}% 24h | Funding ${m.fundingHourlyPct}%/hr)`
+          : `[GlanceDesk] Ticker '${sym}' not found in top 25 Hyperliquid perps.`;
+        await telegram.sendMessage({ chatId: msg.chatId, text, replyToMessageId: msg.messageId });
+      } else if (cmd === '/pnl') {
+        const snap = ledger.snapshot(markets);
+        const sign = snap.totalPnlUsd >= 0 ? '+' : '';
+        const text =
+          `[GlanceDesk PAPER PORTFOLIO]\n` +
+          `Equity: $${snap.equityUsd.toFixed(2)} | Cash: $${snap.cashUsd.toFixed(2)}\n` +
+          `Total PnL: ${sign}$${snap.totalPnlUsd.toFixed(2)} | Open: ${snap.openCount}`;
+        await telegram.sendMessage({ chatId: msg.chatId, text, replyToMessageId: msg.messageId });
+      } else if (cmd === '/alert' && parts[1] && parts[2]) {
+        const sym = parts[1].replace(/^\$/, '').toUpperCase();
+        const target = Number(parts[2]);
+        const m = markets.find((x) => x.symbol.toUpperCase() === sym);
+        const al = ledger.addAlert({ symbol: sym, targetPrice: target, currentPrice: m?.markPx });
+        await telegram.sendMessage({
+          chatId: msg.chatId,
+          text: `[GlanceDesk ALERT SET] ${al.symbol}-PERP ${al.direction} ${formatPrice(al.targetPrice)} — synced to Even G2.`,
+          replyToMessageId: msg.messageId,
+        });
+      } else if (cmd === '/close') {
+        const snap = ledger.snapshot(markets);
+        if (snap.positions.length === 0) {
+          await telegram.sendMessage({
+            chatId: msg.chatId,
+            text: '[GlanceDesk] No open paper positions to close.',
+            replyToMessageId: msg.messageId,
+          });
+        } else {
+          const top = snap.positions[0];
+          const closed = ledger.closePosition(top.id, top.markPx);
+          const sign = closed.realizedPnlUsd >= 0 ? '+' : '';
+          await telegram.sendMessage({
+            chatId: msg.chatId,
+            text:
+              `[GlanceDesk G2 · PAPER CLOSED]\n` +
+              `${closed.side} ${closed.symbol}-PERP @ ${formatPrice(closed.exitPrice)}\n` +
+              `Realized PnL: ${sign}$${closed.realizedPnlUsd.toFixed(2)} (Simulated)`,
+            replyToMessageId: msg.messageId,
+          });
+        }
+      } else if (cmd === '/help' || cmd === '/start') {
+        await telegram.sendMessage({
+          chatId: msg.chatId,
+          text:
+            '[GlanceDesk Even G2 Commands]\n' +
+            '/price SOL — Live Hyperliquid perp mark\n' +
+            '/alert SOL 75 — Set G2 + Telegram price alert\n' +
+            '/pnl — Live paper portfolio PnL\n' +
+            '/close — Close latest paper position',
+          replyToMessageId: msg.messageId,
+        });
+      }
+    } catch {
+      // Do not crash polling loop on malformed command
+    }
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     setCorsHeaders(res);
@@ -133,12 +207,10 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === 'GET' && pathname === '/api/health') {
-      if (!telegram.botInfo && telegram.configured) {
-        await telegram.verifyBot();
-      }
+      if (!telegram.botInfo && telegram.configured) await telegram.verifyBot();
       return sendJson(res, 200, {
         ok: true,
-        app: 'GlanceDesk Backend Proxy (Telegram + Hyperliquid)',
+        app: 'GlanceDesk v2 Backend Proxy (Telegram + Hyperliquid)',
         mode: 'PAPER_ONLY',
         telegramConfigured: telegram.configured,
         botUsername: telegram.botInfo?.username || env('TELEGRAM_BOT_USERNAME', ''),
@@ -155,7 +227,22 @@ const server = http.createServer(async (req, res) => {
       ]);
 
       const markets = hlState.markets;
-      const incoming = tgState.messages.filter((m) => m.direction === 'IN');
+      await processTelegramCommands(tgState.messages, markets);
+
+      const triggered = ledger.evaluateAlerts(markets);
+      if (triggered.length > 0 && telegram.configured && telegram.activeChatId) {
+        for (const al of triggered) {
+          try {
+            await telegram.sendMessage({
+              text: `[GlanceDesk G2 · PRICE ALERT TRIGGERED]\n${al.symbol}-PERP crossed ${al.direction} ${formatPrice(al.targetPrice)} (now ${formatPrice(al.markPx)})!`,
+            });
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+
+      const incoming = tgState.messages.filter((m) => m.direction === 'IN' && !m.text.startsWith('/'));
       const feedSource = incoming.length > 0 ? incoming : tgState.messages;
 
       const feed = feedSource.map((msg) => {
@@ -166,6 +253,9 @@ const server = http.createServer(async (req, res) => {
           smartReplies: buildSmartReplies(msg.text, linkedMarket),
         };
       });
+
+      const primarySymbol = feed[0]?.linkedMarket?.symbol || markets[0]?.symbol || 'BTC';
+      const candles = await hyperliquid.getCandles24h(primarySymbol);
 
       return sendJson(res, 200, {
         ok: true,
@@ -178,9 +268,16 @@ const server = http.createServer(async (req, res) => {
         },
         markets: markets.slice(0, 15),
         feed,
+        candles,
         portfolio: ledger.snapshot(markets),
         updatedAt: new Date().toISOString(),
       });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/candles') {
+      const sym = urlObj.searchParams.get('symbol') || 'BTC';
+      const candles = await hyperliquid.getCandles24h(sym);
+      return sendJson(res, 200, { ok: true, candles });
     }
 
     if (req.method === 'POST' && pathname === '/api/telegram/reply') {
@@ -233,6 +330,50 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === 'POST' && pathname === '/api/paper/close') {
+      const body = await readJsonBody(req);
+      const hlState = await hyperliquid.getMarkets();
+      const snapBefore = ledger.snapshot(hlState.markets);
+      const target = body.positionId
+        ? snapBefore.positions.find((p) => p.id === body.positionId)
+        : snapBefore.positions[0];
+      if (!target) throw new Error('No open paper position to close');
+
+      const closed = ledger.closePosition(target.id, target.markPx);
+      let receiptSent = false;
+      if (body.notifyTelegram !== false && telegram.configured && telegram.activeChatId) {
+        try {
+          const sign = closed.realizedPnlUsd >= 0 ? '+' : '';
+          await telegram.sendMessage({
+            text:
+              `[GlanceDesk G2 · POSITION CLOSED]\n` +
+              `${closed.side} ${closed.symbol}-PERP ($${closed.notionalUsd})\n` +
+              `Entry ${formatPrice(closed.entryPrice)} -> Exit ${formatPrice(closed.exitPrice)}\n` +
+              `Realized PnL: ${sign}$${closed.realizedPnlUsd.toFixed(2)} (Paper only)`,
+          });
+          receiptSent = true;
+        } catch {
+          receiptSent = false;
+        }
+      }
+
+      return sendJson(res, 200, {
+        ok: true,
+        closed,
+        receiptSent,
+        portfolio: ledger.snapshot(hlState.markets),
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/alerts') {
+      const body = await readJsonBody(req);
+      const hlState = await hyperliquid.getMarkets();
+      const sym = String(body.symbol || 'BTC').replace(/-PERP$/i, '').toUpperCase();
+      const m = hlState.markets.find((x) => x.symbol.toUpperCase() === sym);
+      const alert = ledger.addAlert({ symbol: sym, targetPrice: body.targetPrice, currentPrice: m?.markPx });
+      return sendJson(res, 200, { ok: true, alert, portfolio: ledger.snapshot(hlState.markets) });
+    }
+
     if (req.method === 'POST' && pathname === '/api/paper/reset') {
       return sendJson(res, 200, { ok: true, portfolio: ledger.reset() });
     }
@@ -259,8 +400,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   await telegram.verifyBot();
-  console.log(`[GlanceDesk] Backend listening on http://127.0.0.1:${PORT}`);
+  console.log(`[GlanceDesk v2] Backend listening on http://127.0.0.1:${PORT}`);
   console.log(
-    `[GlanceDesk] Telegram bot: ${telegram.botInfo?.username ? '@' + telegram.botInfo.username : 'unverified/offline'}`
+    `[GlanceDesk v2] Telegram bot: ${telegram.botInfo?.username ? '@' + telegram.botInfo.username : 'unverified/offline'}`
   );
 });
