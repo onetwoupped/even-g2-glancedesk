@@ -189,28 +189,29 @@ def render_v4(out_dir: Path):
         (1724, 1726, 1721, 1724.9),
     ]
 
-    # Screen 1: v5 True 1R Risk-Sized Order Ticket ($242 locked risk -> auto-sized qty)
+    # Screen 1: v6 Structure-First Step 3/3 (SL & TP already set -> exact $242 risk & execute)
     buf = make_canvas()
-    draw_text(buf, 16, 12, "3/4 TAKE PROFIT - RISK LOCKED -$242", dim, scale=1)
-    draw_text(buf, 16, 48, "SL $1,738.0 (-$242)", mid, scale=2)
-    draw_text(buf, 16, 78, "> TP $1,692.0 (1.9%)", bright, scale=2)
-    draw_text(buf, 16, 130, "GAIN +$608 (2.51R)", bright, scale=2)
-    draw_text(buf, 16, 160, "SIZE 18.47 ETH ($31.9K)", mid, scale=2)
-    draw_text(buf, 16, 260, "SWIPE MOVE TP - TAP REVIEW - DBL BACK", dim, scale=1)
+    draw_text(buf, 16, 12, "3/3 RISK + EXECUTE - ETH SHORT", dim, scale=1)
+    draw_text(buf, 16, 48, "> RISK -$242 -> +$608", bright, scale=2)
+    draw_text(buf, 16, 78, "SIZE 18.47 ETH ($31.9K)", mid, scale=2)
+    draw_text(buf, 16, 118, "SL $1,738 - TP $1,692", mid, scale=2)
+    draw_text(buf, 16, 150, "REWARD 2.51R", bright, scale=2)
+    draw_text(buf, 16, 184, "TAP TO EXECUTE PAPER", mid, scale=2)
+    draw_text(buf, 16, 260, "SWIPE $ RISK - TAP EXECUTE - DBL TP", dim, scale=1)
     draw_candles(
         buf, 344, 52, 220, 142, "ETH 15M", eth_bars,
-        [(1738.0, "SL", False), (1724.9, "IN", False), (1692.0, "TP", True)]
+        [(1738.0, "SL", True), (1724.9, "IN", False), (1692.0, "TP", True)]
     )
     save_png(buf, out_dir / "g2_feed_preview.png")
 
-    # Screen 2: 1.5R Break-Even Prompt on OHLC Candlesticks (1R = $242)
+    # Screen 2: 1.5R Break-Even Prompt with Explicit Coin Labels (No "Close All")
     buf2 = make_canvas()
     draw_text(buf2, 16, 12, "1.5R REACHED - ETH SHORT - RISK $242", dim, scale=1)
     draw_text(buf2, 16, 48, "ETH SHORT +1.55R", bright, scale=2)
     draw_text(buf2, 16, 76, "$1,704.5 (IN $1,724.9)", mid, scale=2)
-    draw_text(buf2, 16, 128, "> MOVE STOP TO BE", bright, scale=2)
-    draw_text(buf2, 16, 158, "  TAKE 50% (+$188)", mid, scale=2)
-    draw_text(buf2, 16, 188, "  CLOSE ALL (+$375)", mid, scale=2)
+    draw_text(buf2, 16, 128, "> MOVE ETH SL TO BE", bright, scale=2)
+    draw_text(buf2, 16, 158, "  TAKE 50% ETH (+$188)", mid, scale=2)
+    draw_text(buf2, 16, 188, "  CLOSE ETH 100% (+$375)", mid, scale=2)
     draw_text(buf2, 16, 260, "SWIPE PICK - TAP ACT - DBL EXIT", dim, scale=1)
     draw_candles(
         buf2, 344, 52, 220, 142, "ETH 15M", eth_bars,

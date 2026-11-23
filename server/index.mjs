@@ -90,7 +90,7 @@ async function processTelegramCommands(messages, markets) {
       if ((cmd === '/risk' || cmd === '/r') && parts[1]) {
         const res = ledger.setRiskBudget(Number(parts[1].replace(/^\$/, '')));
         await notifyTg(
-          `1R risk set to $${res.defaultRiskUsd} (0.5R = $${(res.defaultRiskUsd * 0.5).toFixed(0)} · 2R = $${(res.defaultRiskUsd * 2).toFixed(0)}).`,
+          `Risk updated to $${res.defaultRiskUsd} per trade (auto-sizes qty to your exact SL).`,
           msg.chatId,
           msg.messageId
         );

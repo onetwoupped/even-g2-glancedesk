@@ -1,11 +1,8 @@
 import type { BackendState, CandleSeries, FeedMessage, MarketItem, PaperPosition, PriceAlert } from './api';
 import { buildMinimalHudPage, truncate, type G2CandleChartSpec, type G2ChartLevel, type G2PageSpec } from './layout';
 
-export type ViewName = 'GLANCE' | 'MANAGE' | 'TICKET_SIDE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_CONFIRM' | 'REPLY';
+export type ViewName = 'GLANCE' | 'MANAGE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_RISK' | 'REPLY';
 export type Gesture = 'TAP' | 'DOUBLE_TAP' | 'SWIPE_UP' | 'SWIPE_DOWN';
-
-// Clean 3-option R-multiplier on glasses (zero swipe fatigue!); base 1R is ANY exact $ via /risk or companion!
-export const RISK_MULTIPLIERS = [0.5, 1.0, 2.0];
 
 export interface AppUIState {
   view: ViewName;
@@ -13,12 +10,13 @@ export interface AppUIState {
   marketIndex: number;
   posIndex: number;
   actionIndex: number;
-  // True 1R Risk-Based Order Ticket
+  // Coin lock prevents background feed updates or unrelated open positions from hijacking active setup
+  lockedSymbol: string | null;
+  // Structure-first 3-step trade ticket: 1) SL -> 2) TP -> 3) Exact $ Risk & Execute
   ticketSide: 'SHORT' | 'LONG';
-  baseRiskUsd: number; // Exact 1R dollar risk (e.g. $100, $242, $850)
-  riskMultIndex: number; // 0 => 0.5R, 1 => 1R, 2 => 2R
-  ticketSlPct: number; // SL distance % from entry (slides live on candlesticks)
-  ticketTpPct: number; // TP distance % from entry (slides live on candlesticks)
+  ticketSlPct: number;
+  ticketTpPct: number;
+  riskUsd: number;
   toast: string;
   data: BackendState | null;
   candles: CandleSeries | null;
@@ -41,6 +39,30 @@ export function formatQty(qty: number): string {
   return qty.toFixed(4);
 }
 
+/**
+ * Smooth continuous $ risk adjustment for glasses swipe (no artificial 50/100/200 preset cap).
+ * Exact arbitrary numbers (e.g. $242, $850, $35) also sync live from companion input or Telegram /risk.
+ */
+export function adjustRiskUsd(current: number, direction: 1 | -1): number {
+  const cur = Math.max(1, Number(current) || 100);
+  let step = 10;
+  if (direction > 0) {
+    if (cur < 50) step = 5;
+    else if (cur < 200) step = 10;
+    else if (cur < 500) step = 25;
+    else if (cur < 2000) step = 50;
+    else step = 100;
+  } else {
+    if (cur <= 50) step = 5;
+    else if (cur <= 200) step = 10;
+    else if (cur <= 500) step = 25;
+    else if (cur <= 2000) step = 50;
+    else step = 100;
+  }
+  const next = cur + direction * step;
+  return Math.max(5, Math.min(50000, Math.round(next)));
+}
+
 export function createInitialUIState(): AppUIState {
   return {
     view: 'GLANCE',
@@ -48,11 +70,11 @@ export function createInitialUIState(): AppUIState {
     marketIndex: 0,
     posIndex: 0,
     actionIndex: 0,
+    lockedSymbol: null,
     ticketSide: 'LONG',
-    baseRiskUsd: 100,
-    riskMultIndex: 1, // 1.0R default
     ticketSlPct: 0.75,
     ticketTpPct: 2.0,
+    riskUsd: 100,
     toast: '',
     data: null,
     candles: null,
@@ -60,14 +82,13 @@ export function createInitialUIState(): AppUIState {
 }
 
 /**
- * True Risk-Based Position Math:
- * - Risk ($ loss if SL hits) is FIXED to exact chosen dollar risk (e.g. $100, $242, $850).
- * - Moving SL tighter increases coin qty/notional; moving SL wider decreases qty/notional.
+ * Risk-Based Position Sizing:
+ * - Structure (SL & TP) is placed first on live OHLC candles.
+ * - Risk ($ loss if SL hits) determines exact coin quantity: qty = riskUsd / |entry - SL|.
  * - Hitting SL ALWAYS loses exactly `riskUsd`.
  */
 export function computeRiskTicket(st: AppUIState, entryPx: number) {
-  const mult = RISK_MULTIPLIERS[st.riskMultIndex % RISK_MULTIPLIERS.length];
-  const riskUsd = Number((st.baseRiskUsd * mult).toFixed(2));
+  const riskUsd = Math.max(1, Number(Number(st.riskUsd || 100).toFixed(2)));
   const slFrac = st.ticketSlPct / 100;
   const tpFrac = st.ticketTpPct / 100;
 
@@ -83,7 +104,6 @@ export function computeRiskTicket(st: AppUIState, entryPx: number) {
 
   return {
     entryPx,
-    mult,
     riskUsd,
     qty: Number(qty.toFixed(4)),
     notionalUsd: Number(notionalUsd.toFixed(2)),
@@ -98,11 +118,22 @@ export function getActiveTriggeredAlert(st: AppUIState): PriceAlert | null {
   return st.data?.portfolio.activeTriggeredAlerts?.[0] || null;
 }
 
+export function getUrgentBreakEvenPosition(st: AppUIState): PaperPosition | null {
+  const list = st.data?.portfolio.positions || [];
+  return list.find((p) => p.currentR >= 1.5 && !p.isBreakEven) || null;
+}
+
 export function getActivePosition(st: AppUIState): PaperPosition | null {
   const list = st.data?.portfolio.positions || [];
   if (list.length === 0) return null;
   const idx = ((st.posIndex % list.length) + list.length) % list.length;
   return list[idx];
+}
+
+export function getPositionForSymbol(st: AppUIState, symbol: string | null | undefined): PaperPosition | null {
+  if (!symbol) return null;
+  const sym = symbol.toUpperCase();
+  return (st.data?.portfolio.positions || []).find((p) => p.symbol.toUpperCase() === sym) || null;
 }
 
 export function getActiveFeedMessage(st: AppUIState): FeedMessage | null {
@@ -113,19 +144,40 @@ export function getActiveFeedMessage(st: AppUIState): FeedMessage | null {
 }
 
 export function getActiveMarket(st: AppUIState): MarketItem | null {
-  const al = getActiveTriggeredAlert(st);
-  if (al && st.data?.markets) {
-    const found = st.data.markets.find((m) => m.symbol.toUpperCase() === al.symbol.toUpperCase());
-    if (found) return found;
-  }
-  const pos = getActivePosition(st);
-  if (st.view === 'MANAGE' && pos && st.data?.markets) {
-    const found = st.data.markets.find((m) => m.symbol.toUpperCase() === pos.symbol.toUpperCase());
-    if (found) return found;
-  }
-  const msg = getActiveFeedMessage(st);
-  if (msg?.linkedMarket) return msg.linkedMarket;
   const mkts = st.data?.markets || [];
+  const findBySym = (sym?: string | null) =>
+    sym ? mkts.find((m) => m.symbol.toUpperCase() === sym.toUpperCase()) || null : null;
+
+  // 1. Inside MANAGE, always show the currently selected open position's market
+  if (st.view === 'MANAGE') {
+    const pos = getActivePosition(st);
+    const pm = findBySym(pos?.symbol);
+    if (pm) return pm;
+  }
+
+  // 2. Inside coin context menu or trade ticket, stay locked on the chosen coin
+  if (st.lockedSymbol && st.view !== 'GLANCE') {
+    const lm = findBySym(st.lockedSymbol);
+    if (lm) return lm;
+  }
+
+  // 3. On GLANCE, priority prompts (triggered alert or 1.5R BE prompt) take precedence
+  if (st.view === 'GLANCE') {
+    const al = getActiveTriggeredAlert(st);
+    const am = findBySym(al?.symbol);
+    if (am) return am;
+
+    const urgent = getUrgentBreakEvenPosition(st);
+    const um = findBySym(urgent?.symbol);
+    if (um) return um;
+  }
+
+  // 4. Otherwise match the active Telegram message's coin (e.g. BTC message => BTC!)
+  const msg = getActiveFeedMessage(st);
+  if (msg?.linkedMarket) {
+    return findBySym(msg.linkedMarket.symbol) || msg.linkedMarket;
+  }
+
   if (mkts.length === 0) return null;
   const idx = ((st.marketIndex % mkts.length) + mkts.length) % mkts.length;
   return mkts[idx];
@@ -137,58 +189,104 @@ export interface HudAction {
     | 'MOVE_BE'
     | 'TAKE_HALF'
     | 'CLOSE_POS'
+    | 'NEXT_POS'
     | 'START_SHORT'
     | 'START_LONG'
     | 'DISMISS_ALERT'
-    | 'GO_TICKET'
     | 'GO_MANAGE'
+    | 'GO_MANAGE_SYMBOL'
     | 'GO_REPLY'
     | 'SEND_TG_REPLY';
   payload?: string;
 }
 
-export function getManageActions(st: AppUIState): HudAction[] {
-  const pos = getActivePosition(st);
+export function getManageActions(st: AppUIState, overridePos?: PaperPosition | null): HudAction[] {
+  const pos = overridePos ?? getActivePosition(st);
+  const allPositions = st.data?.portfolio.positions || [];
+
   if (!pos) {
+    const mkt = getActiveMarket(st);
+    const sym = mkt?.symbol || 'ETH';
     return [
-      { label: 'New setup', kind: 'GO_TICKET' },
-      { label: 'Reply in Telegram', kind: 'GO_REPLY' },
+      { label: `Short ${sym} (SL/TP)`, kind: 'START_SHORT', payload: sym },
+      { label: `Long ${sym} (SL/TP)`, kind: 'START_LONG', payload: sym },
+      { label: 'Back to feed', kind: 'GO_REPLY' },
     ];
   }
+
   const halfPnl = pos.unrealizedPnlUsd * 0.5;
   const hSign = halfPnl >= 0 ? '+' : '';
   const fSign = pos.unrealizedPnlUsd >= 0 ? '+' : '';
-  return [
+  const sym = pos.symbol;
+
+  const actions: HudAction[] = [
     {
-      label: pos.isBreakEven ? `Stop at BE (${formatPx(pos.entryPrice)})` : `Move stop to BE (${formatPx(pos.entryPrice)})`,
+      label: pos.isBreakEven
+        ? `${sym} SL at BE (${formatPx(pos.entryPrice)})`
+        : `Move ${sym} SL to BE (${formatPx(pos.entryPrice)})`,
       kind: 'MOVE_BE',
+      payload: pos.id,
     },
-    { label: `Take 50% (${hSign}$${halfPnl.toFixed(1)})`, kind: 'TAKE_HALF' },
-    { label: `Close all (${fSign}$${pos.unrealizedPnlUsd.toFixed(1)})`, kind: 'CLOSE_POS' },
-    { label: 'New trade setup', kind: 'GO_TICKET' },
+    { label: `Take 50% ${sym} (${hSign}$${halfPnl.toFixed(1)})`, kind: 'TAKE_HALF', payload: pos.id },
+    { label: `Close ${sym} 100% (${fSign}$${pos.unrealizedPnlUsd.toFixed(1)})`, kind: 'CLOSE_POS', payload: pos.id },
   ];
+
+  if (!overridePos && allPositions.length > 1) {
+    const curIdx = allPositions.findIndex((p) => p.id === pos.id);
+    const nextPos = allPositions[(curIdx + 1) % allPositions.length];
+    actions.push({ label: `Switch to ${nextPos.symbol} ${nextPos.side}`, kind: 'NEXT_POS' });
+  }
+
+  if (!overridePos) {
+    actions.push({ label: `New ${sym} trade`, kind: 'START_LONG', payload: sym });
+  }
+
+  return actions;
 }
 
-export function getAlertActions(): HudAction[] {
+export function getAlertActions(symbol: string): HudAction[] {
   return [
-    { label: 'Short (place SL & TP)', kind: 'START_SHORT' },
-    { label: 'Long (place SL & TP)', kind: 'START_LONG' },
+    { label: `Short ${symbol} (place SL/TP)`, kind: 'START_SHORT', payload: symbol },
+    { label: `Long ${symbol} (place SL/TP)`, kind: 'START_LONG', payload: symbol },
     { label: 'Dismiss alert', kind: 'DISMISS_ALERT' },
   ];
 }
 
 export function getReplyActions(st: AppUIState): HudAction[] {
+  const mkt = getActiveMarket(st);
+  const sym = mkt?.symbol || 'ETH';
   const msg = getActiveFeedMessage(st);
-  const smart = msg?.smartReplies || [
-    'Checking 15m candles now',
-    'In a session, watching on glasses',
-    'Stop moved to BE',
-  ];
-  return [
-    { label: 'Set up trade (Risk + SL/TP)', kind: 'GO_TICKET' as const },
-    ...smart.map((label) => ({ label, kind: 'SEND_TG_REPLY' as const, payload: label })),
-    { label: 'Manage open position', kind: 'GO_MANAGE' as const },
-  ];
+  const posOnThisCoin = getPositionForSymbol(st, sym);
+  const allPositions = st.data?.portfolio.positions || [];
+  const otherPositions = allPositions.filter((p) => p.symbol.toUpperCase() !== sym.toUpperCase());
+
+  const smart = (msg?.smartReplies || ['Checking 15m candles', 'Watching on glasses']).slice(0, 2);
+  const actions: HudAction[] = [];
+
+  if (posOnThisCoin) {
+    actions.push({
+      label: `Manage ${sym} ${posOnThisCoin.side} (${posOnThisCoin.currentR >= 0 ? '+' : ''}${posOnThisCoin.currentR}R)`,
+      kind: 'GO_MANAGE_SYMBOL',
+      payload: sym,
+    });
+  }
+
+  actions.push({ label: `Short ${sym} (place SL/TP)`, kind: 'START_SHORT', payload: sym });
+  actions.push({ label: `Long ${sym} (place SL/TP)`, kind: 'START_LONG', payload: sym });
+
+  for (const label of smart) {
+    actions.push({ label, kind: 'SEND_TG_REPLY', payload: label });
+  }
+
+  if (otherPositions.length > 0) {
+    const names = otherPositions
+      .slice(0, 2)
+      .map((p) => p.symbol)
+      .join(', ');
+    actions.push({ label: `Open positions (${names})`, kind: 'GO_MANAGE' });
+  }
+
+  return actions;
 }
 
 function fmtAge(ts: number): string {
@@ -212,19 +310,19 @@ function buildChart(st: AppUIState, mkt: MarketItem | null, levels?: G2ChartLeve
 
 export function renderPage(st: AppUIState): G2PageSpec {
   const port = st.data?.portfolio;
-  const pos = getActivePosition(st);
   const alert = getActiveTriggeredAlert(st);
+  const urgentPos = getUrgentBreakEvenPosition(st);
   const mkt = getActiveMarket(st);
 
   // 1. ROOT GLANCE
   if (st.view === 'GLANCE') {
     if (alert && mkt) {
-      const actions = getAlertActions();
+      const actions = getAlertActions(mkt.symbol);
       const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
       const sign = mkt.change24hPct >= 0 ? '+' : '';
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()} · 1R $${st.baseRiskUsd}`,
+        eyebrow: `alert hit · ${mkt.symbol.toLowerCase()}`,
         main: [
           `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%`,
           alert.note ? truncate(alert.note, 28) : `level ${formatPx(alert.targetPrice)}`,
@@ -236,51 +334,55 @@ export function renderPage(st: AppUIState): G2PageSpec {
       });
     }
 
-    if (pos && pos.currentR >= 1.5 && !pos.isBreakEven) {
-      const actions = getManageActions(st).slice(0, 3);
+    if (urgentPos) {
+      const actions = getManageActions(st, urgentPos);
       const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
-      const posMkt = st.data?.markets.find((m) => m.symbol === pos.symbol) || mkt;
+      const posMkt = st.data?.markets.find((m) => m.symbol === urgentPos.symbol) || mkt;
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `1.5R reached · ${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()}`,
+        eyebrow: `1.5R reached · ${urgentPos.symbol.toLowerCase()} ${urgentPos.side.toLowerCase()}`,
         main: [
-          `${pos.symbol} ${pos.side} +${pos.currentR}R`,
-          `${formatPx(pos.markPx)} (in ${formatPx(pos.entryPrice)})`,
+          `${urgentPos.symbol} ${urgentPos.side} +${urgentPos.currentR}R`,
+          `${formatPx(urgentPos.markPx)} (in ${formatPx(urgentPos.entryPrice)})`,
           '',
           ...actions.map((a, i) => `${i === sel ? '› ' : '  '}${a.label}`),
         ].join('\n'),
         hint: 'swipe pick · tap act · dbl exit',
         chart: buildChart(st, posMkt, [
-          { price: pos.entryPrice, label: 'IN', emphasized: true },
-          { price: pos.stopLoss, label: 'SL', emphasized: false },
+          { price: urgentPos.entryPrice, label: 'IN', emphasized: true },
+          { price: urgentPos.stopLoss, label: 'SL', emphasized: false },
         ]),
       });
     }
 
     const msg = getActiveFeedMessage(st);
+    const sameCoinPos = mkt ? getPositionForSymbol(st, mkt.symbol) : null;
+    const openCount = port?.openCount || 0;
+
     if (msg) {
       const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
-      const posLine = pos
-        ? `${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R${pos.isBreakEven ? ' (BE)' : ''}`
+      // Strictly show THIS message's coin — NEVER hijack a BTC message with an unrelated ETH position!
+      const marketLine = sameCoinPos
+        ? `${sameCoinPos.symbol} ${sameCoinPos.side} ${sameCoinPos.currentR >= 0 ? '+' : ''}${sameCoinPos.currentR}R${sameCoinPos.isBreakEven ? ' (BE)' : ''}`
         : mkt
           ? `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%`
           : '';
-      const chartLevels: G2ChartLevel[] | undefined =
-        pos && pos.symbol === mkt?.symbol
-          ? [
-              { price: pos.entryPrice, label: 'IN' },
-              { price: pos.stopLoss, label: pos.isBreakEven ? 'BE' : 'SL', emphasized: true },
-            ]
-          : undefined;
+      const chartLevels: G2ChartLevel[] | undefined = sameCoinPos
+        ? [
+            { price: sameCoinPos.entryPrice, label: 'IN' },
+            { price: sameCoinPos.stopLoss, label: sameCoinPos.isBreakEven ? 'BE' : 'SL', emphasized: true },
+          ]
+        : undefined;
 
+      const openTag = openCount > 0 ? ` · ${openCount} open` : '';
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `${truncate(msg.sender, 16)} · ${fmtAge(msg.timestamp)} · 1R $${st.baseRiskUsd}${st.toast ? ` · ${st.toast}` : ''}`,
+        eyebrow: `${truncate(msg.sender, 16)} · ${fmtAge(msg.timestamp)}${openTag}${st.toast ? ` · ${st.toast}` : ''}`,
         main: [
           truncate(msg.text, 68),
           '',
-          posLine,
-          pos ? '› Tap to manage' : '› Tap to trade / reply',
+          marketLine,
+          `› Tap for ${mkt?.symbol || 'trade'} / reply`,
         ]
           .filter(Boolean)
           .join('\n'),
@@ -292,52 +394,35 @@ export function renderPage(st: AppUIState): G2PageSpec {
     const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
     return buildMinimalHudPage({
       view: 'GLANCE',
-      eyebrow: `glancedesk · 1R $${st.baseRiskUsd}`,
+      eyebrow: `glancedesk${openCount > 0 ? ` · ${openCount} open` : ''}`,
       main: [
         mkt ? `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%` : 'Connecting...',
-        st.toast || 'Telegram: /risk 242 or /alert NEAR 4.20',
+        st.toast || 'Telegram: /alert NEAR 4.20 or /risk 242',
         '',
-        pos ? `Open: ${pos.symbol} ${pos.side} ${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '› Tap to set up trade',
+        sameCoinPos
+          ? `Open: ${sameCoinPos.symbol} ${sameCoinPos.side} ${sameCoinPos.currentR >= 0 ? '+' : ''}${sameCoinPos.currentR}R`
+          : `› Tap for ${mkt?.symbol || 'trade'} setup`,
       ].join('\n'),
-      hint: 'tap setup · swipe coin · dbl exit',
+      hint: 'tap open · swipe coin · dbl exit',
       chart: buildChart(st, mkt),
     });
   }
 
-  // 2. STEP 1/4 — SIDE & RISK (0.5R / 1R / 2R of your exact 1R dollar risk!)
-  if (st.view === 'TICKET_SIDE') {
-    const px = mkt?.markPx || 0;
-    const calc = computeRiskTicket(st, px);
-    return buildMinimalHudPage({
-      view: 'TICKET_SIDE',
-      eyebrow: `1/4 risk · ${mkt?.symbol.toLowerCase() || 'perp'} · 1R = $${st.baseRiskUsd}`,
-      main: [
-        `${mkt?.symbol || 'PERP'} ${formatPx(px)}`,
-        '',
-        `› ${st.ticketSide}  Risk -$${calc.riskUsd} (${calc.mult}R)`,
-        `  Auto-sizes to exact SL`,
-        `  Tap to place Stop Loss`,
-      ].join('\n'),
-      hint: 'up flip side · dn 0.5/1/2R · tap SL',
-      chart: buildChart(st, mkt, px > 0 ? [{ price: px, label: 'NOW' }] : undefined),
-    });
-  }
-
-  // 3. STEP 2/4 — PLACE STOP LOSS ON CANDLES (RISK LOCKED, POSITION SIZE AUTO-CALCULATES!)
+  // 2. STEP 1/3 — PLACE STOP LOSS FIRST ON LIVE OHLC CANDLES (STRUCTURE FIRST)
   if (st.view === 'TICKET_SL') {
     const px = mkt?.markPx || 0;
     const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
       view: 'TICKET_SL',
-      eyebrow: `2/4 stop loss · risk locked -$${calc.riskUsd}`,
+      eyebrow: `1/3 stop loss · ${(mkt?.symbol || 'perp').toLowerCase()} ${st.ticketSide.toLowerCase()}`,
       main: [
         `Entry ${formatPx(px)}`,
-        `› SL ${formatPx(calc.stopLoss)} (${st.ticketSlPct.toFixed(2)}%)`,
+        `› SL ${formatPx(calc.stopLoss)} (${st.ticketSide === 'LONG' ? '-' : '+'}${st.ticketSlPct.toFixed(2)}%)`,
         '',
-        `Max loss -$${calc.riskUsd}`,
-        `Size ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
+        `Place SL on structure`,
+        `Tap to set Take Profit`,
       ].join('\n'),
-      hint: 'swipe move SL · tap set TP · dbl back',
+      hint: 'swipe move SL · tap TP · dbl back',
       chart: buildChart(st, mkt, [
         { price: px, label: 'IN', emphasized: false },
         { price: calc.stopLoss, label: 'SL', emphasized: true },
@@ -345,21 +430,21 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 4. STEP 3/4 — PLACE TAKE PROFIT ON CANDLES (EXACT $ GAIN & R:R!)
+  // 3. STEP 2/3 — PLACE TAKE PROFIT ON LIVE OHLC CANDLES (LOCKS R:R)
   if (st.view === 'TICKET_TP') {
     const px = mkt?.markPx || 0;
     const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
       view: 'TICKET_TP',
-      eyebrow: `3/4 take profit · risk -$${calc.riskUsd}`,
+      eyebrow: `2/3 take profit · ${(mkt?.symbol || 'perp').toLowerCase()} ${st.ticketSide.toLowerCase()}`,
       main: [
-        `SL ${formatPx(calc.stopLoss)} (-$${calc.riskUsd})`,
+        `SL ${formatPx(calc.stopLoss)} (${st.ticketSlPct.toFixed(2)}%)`,
         `› TP ${formatPx(calc.takeProfit)} (${st.ticketTpPct.toFixed(2)}%)`,
         '',
-        `Gain +$${calc.profitUsd.toFixed(0)}`,
-        `Reward ${calc.rr}R`,
+        `Setup R:R  ${calc.rr}R`,
+        `Tap to choose $ risk`,
       ].join('\n'),
-      hint: 'swipe move TP · tap review · dbl back',
+      hint: 'swipe move TP · tap risk · dbl SL',
       chart: buildChart(st, mkt, [
         { price: calc.stopLoss, label: 'SL', emphasized: false },
         { price: px, label: 'IN', emphasized: false },
@@ -368,21 +453,21 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 5. STEP 4/4 — CONFIRM EXACT RISK-SIZED ORDER
-  if (st.view === 'TICKET_CONFIRM') {
+  // 4. STEP 3/3 — CHOOSE EXACT $ RISK & EXECUTE (AUTO-SIZES QTY TO LOCKED SL!)
+  if (st.view === 'TICKET_RISK') {
     const px = mkt?.markPx || 0;
     const calc = computeRiskTicket(st, px);
     return buildMinimalHudPage({
-      view: 'TICKET_CONFIRM',
-      eyebrow: `4/4 confirm · size ${formatNotional(calc.notionalUsd)}`,
+      view: 'TICKET_RISK',
+      eyebrow: `3/3 risk & execute · ${(mkt?.symbol || 'perp').toLowerCase()} ${st.ticketSide.toLowerCase()}`,
       main: [
-        `${mkt?.symbol || 'PERP'} ${st.ticketSide} @ ${formatPx(px)}`,
-        `SL ${formatPx(calc.stopLoss)} (-$${calc.riskUsd})`,
-        `TP ${formatPx(calc.takeProfit)} (+$${calc.profitUsd.toFixed(0)} · ${calc.rr}R)`,
-        `Qty ${formatQty(calc.qty)} ${mkt?.symbol || ''}`,
-        '› Tap to execute paper',
+        `› Risk -$${calc.riskUsd} -> +$${calc.profitUsd.toFixed(0)}`,
+        `Size ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
+        `SL ${formatPx(calc.stopLoss)} · TP ${formatPx(calc.takeProfit)}`,
+        `Reward ${calc.rr}R`,
+        `Tap to execute paper`,
       ].join('\n'),
-      hint: 'tap confirm · dbl edit TP',
+      hint: 'swipe $ risk · tap execute · dbl TP',
       chart: buildChart(st, mkt, [
         { price: calc.stopLoss, label: 'SL', emphasized: true },
         { price: px, label: 'IN', emphasized: false },
@@ -391,12 +476,15 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 6. MANAGE OPEN POSITION
+  // 5. MANAGE OPEN POSITION (EXPLICIT PER-COIN ACTIONS)
   if (st.view === 'MANAGE') {
+    const allPos = port?.positions || [];
+    const pos = getActivePosition(st);
     const actions = getManageActions(st);
     const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
     const posMkt = pos ? st.data?.markets.find((m) => m.symbol === pos.symbol) || mkt : mkt;
     const rStr = pos ? `${pos.currentR >= 0 ? '+' : ''}${pos.currentR}R` : '';
+    const idxNum = pos ? allPos.findIndex((p) => p.id === pos.id) + 1 : 0;
     const levels: G2ChartLevel[] | undefined = pos
       ? [
           { price: pos.entryPrice, label: 'IN' },
@@ -408,7 +496,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
     return buildMinimalHudPage({
       view: 'MANAGE',
       eyebrow: pos
-        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} · risk $${pos.riskUsd}`
+        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} (${idxNum}/${allPos.length}) · risk $${pos.riskUsd}`
         : 'positions · none open',
       main: [
         pos ? `${pos.symbol} ${pos.side} ${rStr}` : 'No open paper positions',
@@ -421,13 +509,12 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 7. REPLY / QUICK ACTIONS
-  const msg = getActiveFeedMessage(st);
+  // 6. COIN CONTEXT MENU (SCOPED TO ACTIVE COIN — e.g. BTC stays BTC!)
   const actions = getReplyActions(st);
   const sel = ((st.actionIndex % actions.length) + actions.length) % actions.length;
   return buildMinimalHudPage({
     view: 'REPLY',
-    eyebrow: msg ? `reply · ${truncate(msg.sender, 22)}` : 'actions',
+    eyebrow: mkt ? `${mkt.symbol.toLowerCase()} · ${formatPx(mkt.markPx)}` : 'actions',
     main: actions.map((a, i) => `${i === sel ? '› ' : '  '}${truncate(a.label, 38)}`).join('\n'),
     hint: 'swipe pick · tap go · dbl back',
   });

@@ -14,15 +14,14 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 
 ---
 
-## Real Trader Workflow on Even G2 (True 1R Risk Sizing — Zero Swipe Fatigue)
+## Real Trader Workflow on Even G2 (Structure First -> Exact Dollar Risk -> Execute)
 1. **True OHLC Candlesticks on 4-Bit Monochrome Glass:** Bullish bars render as crisp hollow bright outlines with wicks; bearish bars render as solid filled bodies with wicks — floating borderlessly over transparent black glass (`borderWidth: 0`).
-2. **Exact Dollar Risk First (`1R`), Auto-Calculated Size (`qty = risk / |entry - SL|`):**
-   - Set your exact `1R` dollar risk once via Telegram (`/risk 242` or `/risk 850`) or the companion WebView input — never scroll through 20+ dollar presets on glasses.
-   - **Step 1 (`Side & Risk`):** Flip `SHORT / LONG` and toggle just **3 clean options on glasses: `0.5R / 1R / 2R`** (e.g., `$121 / $242 / $484`).
-   - **Step 2 (`Place Stop Loss`):** Swipe up/down to slide the live **`SL` line across the actual 15m candle wicks**. Your **dollar risk stays locked (`-$242`)** while **coin quantity & notional (`18.47 ETH / $31.9k`) auto-calculate** instantaneously.
-   - **Step 3 (`Place Take Profit`):** Swipe up/down to slide the live **`TP` line across the candles** while seeing **exact dollar gain (`+$608`)** and **real `R:R` (`2.51R`)** before entering.
-   - **Step 4 (`Confirm`):** Single tap executes the simulated paper order and posts the full entry/SL/TP/qty risk receipt to Telegram.
-3. **In-Lecture / Hands-Free Management (+1.5R Break-Even & 50% Partial):** When a position reaches `+1.5R`, the glasses quietly surface **`Move stop to BE`**, **`Take 50%`**, or **`Close all`** — one tap moves your stop to entry and logs it to Telegram.
+2. **3-Step Structure-First Ticket (`SL` -> `TP` -> Exact `$` Risk & Execute):**
+   - Pick `Short <COIN>` or `Long <COIN>` directly from the active coin's Telegram feed context (coin-locked so an open ETH trade never hijacks a BTC alert).
+   - **Step 1/3 (`Place Stop Loss`):** Swipe up/down to place **`SL` directly on the 15m candle structure**.
+   - **Step 2/3 (`Place Take Profit`):** Swipe up/down to place **`TP` on the candles** and see the setup's **`R:R` (`2.51R`)**.
+   - **Step 3/3 (`Choose Exact $ Risk & Execute`):** Set the exact dollar risk for *this* trade (`$242`, `$850`, or any amount — live-typed in the companion box, via Telegram `/risk 242`, or smoothly adjusted on glasses). Position size (`qty = risk / |entry - SL|`) and target dollar gain auto-calculate instantaneously; single tap executes and logs the full receipt to Telegram.
+3. **Explicit Per-Coin Position Management (+1.5R Break-Even & 50% Partial):** Every action names its coin explicitly (`Move ETH SL to BE`, `Take 50% ETH`, `Close ETH 100%`, `Switch to BTC`) so managing multiple open positions is unambiguous.
 
 ---
 
@@ -40,7 +39,7 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 ```bash
 npm install
 cp .env.example .env   # Paste your TELEGRAM_BOT_TOKEN
-npm test               # Runs 7 unit & official SDK validation tests
+npm test               # Runs 9 unit, multi-position & official SDK validation tests
 npm run server         # Terminal 1 — Backend proxy (:8787)
 npm run dev            # Terminal 2 — Glasses WebView (:5173)
 npm run sim            # Terminal 3 — Official Even Hub G2 Simulator

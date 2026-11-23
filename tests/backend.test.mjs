@@ -31,7 +31,7 @@ test('app.json satisfies Even Hub manifest & QA rules', () => {
   }
 });
 
-test('Official Even Hub SDK validateEvenHubPageContainer approves v5 1R risk-sized candlestick HUD layout', () => {
+test('Official Even Hub SDK validateEvenHubPageContainer approves v6 structure-first 3-step HUD layout', () => {
   const result = validateEvenHubPageContainer({
     textObject: [
       new TextContainerProperty({
@@ -47,7 +47,7 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v5 1R risk-siz
         paddingLength: 0,
         textColor: 1,
         isEventCapture: 0,
-        content: '2/4 stop loss · risk locked -$242',
+        content: '3/3 risk & execute · eth short',
       }),
       new TextContainerProperty({
         containerID: 2,
@@ -62,7 +62,7 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v5 1R risk-siz
         paddingLength: 0,
         textColor: 4,
         isEventCapture: 1,
-        content: 'Entry $1,724.9\n› SL $1,737.8 (0.75%)\n\nMax loss -$242\nSize 18.70 ETH ($32.3k)',
+        content: '› Risk -$242 -> +$608\nSize 18.47 ETH ($31.9k)\nSL $1,738.0 · TP $1,692.0\nReward 2.51R\nTap to execute paper',
       }),
       new TextContainerProperty({
         containerID: 3,
@@ -77,7 +77,7 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v5 1R risk-siz
         paddingLength: 0,
         textColor: 1,
         isEventCapture: 0,
-        content: 'swipe move SL · tap set TP · dbl back',
+        content: 'swipe $ risk · tap execute · dbl TP',
       }),
     ],
     imageObject: [
@@ -94,8 +94,8 @@ test('Official Even Hub SDK validateEvenHubPageContainer approves v5 1R risk-siz
       menuItems: [
         new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
         new MenuItemProperty({ itemID: 2, itemName: 'New Trade (SL/TP)' }),
-        new MenuItemProperty({ itemID: 3, itemName: 'Manage Position' }),
-        new MenuItemProperty({ itemID: 4, itemName: 'Toggle 0.5/1/2R' }),
+        new MenuItemProperty({ itemID: 3, itemName: 'Open Positions' }),
+        new MenuItemProperty({ itemID: 4, itemName: 'Flip LONG/SHORT' }),
       ],
     }),
   });
@@ -204,4 +204,51 @@ test('PaperLedger computes true 1R risk-based sizing ($242 / $850 exact risk), 1
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('Multi-position isolation: closing ETH 100% leaves open BTC position completely intact', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glancedesk-multi-'));
+  const file = path.join(tmpDir, 'ledger.json');
+  try {
+    const ledger = new PaperLedger(file);
+    const eth = ledger.placePaperOrder({
+      marketId: 'ETH-PERP',
+      symbol: 'ETH',
+      side: 'LONG',
+      riskUsd: 100,
+      price: 2000,
+      stopLoss: 1980,
+      takeProfit: 2060,
+    });
+    const btc = ledger.placePaperOrder({
+      marketId: 'BTC-PERP',
+      symbol: 'BTC',
+      side: 'SHORT',
+      riskUsd: 242,
+      price: 60000,
+      stopLoss: 60600,
+      takeProfit: 58200,
+    });
+    assert.equal(ledger.snapshot([]).openCount, 2);
+
+    // Closing ETH by positionId MUST only close ETH and keep BTC open
+    ledger.closePosition(eth.id, 2020, 'MANUAL');
+    const snap = ledger.snapshot([
+      { symbol: 'ETH', markPx: 2020 },
+      { symbol: 'BTC', markPx: 59700 },
+    ]);
+    assert.equal(snap.openCount, 1);
+    assert.equal(snap.positions[0].id, btc.id);
+    assert.equal(snap.positions[0].symbol, 'BTC');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('UX invariants in src/state.ts: no "Close all" ambiguity, no 50/100/200 preset carousel, coin locking present', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'state.ts'), 'utf8');
+  assert.doesNotMatch(src, /Close all/i, 'Ambiguous "Close all" label must not exist');
+  assert.doesNotMatch(src, /RISK_MULTIPLIERS/, 'Artificial 0.5R/1R/2R multiplier carousel must not exist');
+  assert.match(src, /Close \$\{sym\} 100%/, 'Must explicitly name the coin being closed (Close <SYM> 100%)');
+  assert.match(src, /lockedSymbol/, 'Must lock active coin context so unrelated open positions never hijack feed messages');
 });

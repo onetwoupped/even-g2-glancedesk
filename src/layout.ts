@@ -49,7 +49,7 @@ export interface G2ImageContainerSpec {
 }
 
 export interface G2PageSpec {
-  view: 'GLANCE' | 'MANAGE' | 'TICKET_SIDE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_CONFIRM' | 'REPLY';
+  view: 'GLANCE' | 'MANAGE' | 'TICKET_SL' | 'TICKET_TP' | 'TICKET_RISK' | 'REPLY';
   containerTotalNum: number;
   textObject: G2TextContainerSpec[];
   imageObject?: G2ImageContainerSpec[];
