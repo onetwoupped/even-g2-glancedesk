@@ -94,6 +94,13 @@ async function processTelegramCommands(messages, markets) {
           msg.chatId,
           msg.messageId
         );
+      } else if (cmd === '/maxrisk' && parts[1]) {
+        const res = ledger.setMaxRiskPct(Number(parts[1].replace(/%$/, '')));
+        await notifyTg(
+          `Max risk cap per trade set to ${res.maxRiskPct}% of balance (hard-blocks oversized orders).`,
+          msg.chatId,
+          msg.messageId
+        );
       } else if (cmd === '/price' && parts[1]) {
         const sym = parts[1].replace(/^\$/, '').toUpperCase();
         const m = markets.find((x) => x.symbol.toUpperCase() === sym);
@@ -152,7 +159,7 @@ async function processTelegramCommands(messages, markets) {
         }
       } else if (cmd === '/help' || cmd === '/start') {
         await notifyTg(
-          'Commands:\n/risk 242 — set your exact 1R dollar risk\n/alert NEAR 4.20 structure\n/be · /half · /close · /pnl · /price NEAR',
+          'Commands:\n/risk 242 — default $ risk\n/maxrisk 10 — max % balance cap\n/alert NEAR 4.20 structure\n/be · /half · /close · /pnl · /price NEAR',
           msg.chatId,
           msg.messageId
         );
@@ -179,7 +186,7 @@ const server = http.createServer(async (req, res) => {
       if (!telegram.botInfo && telegram.configured) await telegram.verifyBot();
       return sendJson(res, 200, {
         ok: true,
-        app: 'GlanceDesk v5 (Even G2 1R Risk-Sized Candlestick HUD)',
+        app: 'GlanceDesk (Even G2 Multi-TF 1R Risk-Sized Candlestick HUD)',
         mode: 'PAPER_ONLY',
         telegramConfigured: telegram.configured,
         botUsername: telegram.botInfo?.username || env('TELEGRAM_BOT_USERNAME', ''),
@@ -262,7 +269,12 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/prefs') {
       const body = await readJsonBody(req);
-      const prefs = ledger.setRiskBudget(body.riskUsd);
+      let prefs = {
+        defaultRiskUsd: ledger.state.defaultRiskUsd,
+        maxRiskPct: ledger.state.maxRiskPct,
+      };
+      if (body.riskUsd !== undefined) prefs = ledger.setRiskBudget(body.riskUsd);
+      if (body.maxRiskPct !== undefined) prefs = ledger.setMaxRiskPct(body.maxRiskPct);
       const hlState = await hyperliquid.getMarkets();
       return sendJson(res, 200, { ok: true, prefs, portfolio: ledger.snapshot(hlState.markets) });
     }
@@ -399,8 +411,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   await telegram.verifyBot();
-  console.log(`[GlanceDesk v5] Backend listening on http://127.0.0.1:${PORT}`);
+  console.log(`[GlanceDesk] Backend listening on http://127.0.0.1:${PORT}`);
   console.log(
-    `[GlanceDesk v5] Telegram bot: ${telegram.botInfo?.username ? '@' + telegram.botInfo.username : 'unverified/offline'}`
+    `[GlanceDesk] Telegram bot: ${telegram.botInfo?.username ? '@' + telegram.botInfo.username : 'unverified/offline'}`
   );
 });

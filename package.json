@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "GlanceDesk for Even G2: Read VIP Telegram alerts, reply in 1 tap or voice, and execute live-priced Hyperliquid paper perps.",
+  "description": "GlanceDesk for Even G2: Borderless multi-timeframe OHLC candlestick HUD with 2D risk numpad, auto-sized Hyperliquid paper perps, and Telegram sync.",
   "scripts": {
     "server": "node server/index.mjs",
     "dev": "vite --host 127.0.0.1 --port 5173",

@@ -293,6 +293,36 @@ test('Fat-finger guard ($12,500 slip on $10,000 balance) & idempotent retry safe
     }, /Fat-finger guard/);
     assert.equal(ledger.snapshot([]).openCount, 0);
 
+    // 1b. Account risk cap: $2,500 (25% of $10,000) exceeds default 10% maxRiskPct -> hard blocked
+    assert.throws(() => {
+      ledger.placePaperOrder({
+        marketId: 'ETH-PERP',
+        symbol: 'ETH',
+        side: 'LONG',
+        riskUsd: 2500,
+        price: 2000,
+        stopLoss: 1980,
+        takeProfit: 2060,
+        idempotencyKey: 'ord_cap_1',
+      });
+    }, /Account risk cap/);
+
+    // Customizing maxRiskPct to 5% lowers the cap dynamically to $500
+    assert.equal(ledger.setMaxRiskPct(5).maxRiskPct, 5);
+    assert.throws(() => {
+      ledger.placePaperOrder({
+        marketId: 'ETH-PERP',
+        symbol: 'ETH',
+        side: 'LONG',
+        riskUsd: 600,
+        price: 2000,
+        stopLoss: 1980,
+        takeProfit: 2060,
+        idempotencyKey: 'ord_cap_2',
+      });
+    }, /Account risk cap/);
+    ledger.setMaxRiskPct(10);
+
     // 2. Idempotent order retry (BLE/network drop replay with same idempotencyKey never double-opens)
     const first = ledger.placePaperOrder({
       marketId: 'ETH-PERP',

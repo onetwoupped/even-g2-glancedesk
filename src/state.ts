@@ -130,17 +130,18 @@ export interface RiskGuardResult {
 
 /**
  * Fat-finger & Account-Size Risk Guardrail:
- * - Catches numpad slips like $12,500 instead of $125 BEFORE execution.
- * - BLOCKED: risk or required isolated margin exceeds available paper balance.
- * - WARN: risk > 5% of account equity -> requires an explicit second "ARE YOU SURE?" tap.
- * - OK: <= 5% equity -> fast 1-tap execution with zero extra friction.
+ * - Catches numpad slips like $12,500 instead of $125 OR oversized risks above maxRiskPct (default 10%).
+ * - BLOCKED: risk exceeds balance, margin exceeds cash, OR risk % exceeds account maxRiskPct cap.
+ * - WARN: risk > 5% of balance (still allowed up to maxRiskPct, highlighted with ! HIGH RISK).
+ * - OK: <= 5% balance (still requires mandatory "Are you sure? Risking X% of balance" second tap).
  */
 export function evaluateRiskGuard(
   calc: { riskUsd: number; notionalUsd: number },
-  portfolio: { cashUsd: number; equityUsd: number } | null | undefined
+  portfolio: { cashUsd: number; equityUsd: number; maxRiskPct?: number } | null | undefined
 ): RiskGuardResult {
   const cash = portfolio?.cashUsd ?? 10000;
   const equity = Math.max(1, portfolio?.equityUsd ?? cash);
+  const maxRiskPct = portfolio?.maxRiskPct ?? 10;
   const riskPct = Number(((calc.riskUsd / equity) * 100).toFixed(1));
   const marginUsd = Number(Math.max(calc.riskUsd, calc.notionalUsd / 50).toFixed(2));
 
@@ -150,6 +151,15 @@ export function evaluateRiskGuard(
       riskPct,
       marginUsd,
       reason: `Exceeds cash ($${cash.toFixed(0)})`,
+    };
+  }
+  if (riskPct > maxRiskPct) {
+    const capUsd = ((equity * maxRiskPct) / 100).toFixed(0);
+    return {
+      level: 'BLOCKED',
+      riskPct,
+      marginUsd,
+      reason: `Over ${maxRiskPct}% cap (max $${capUsd})`,
     };
   }
   if (marginUsd > cash) {
@@ -165,7 +175,7 @@ export function evaluateRiskGuard(
       level: 'WARN',
       riskPct,
       marginUsd,
-      reason: `${riskPct}% of equity`,
+      reason: `${riskPct}% of balance`,
     };
   }
   return { level: 'OK', riskPct, marginUsd, reason: '' };
@@ -401,6 +411,12 @@ function buildChart(st: AppUIState, mkt: MarketItem | null, levels?: G2ChartLeve
   };
 }
 
+function withSyncStatus(eyebrow: string, st: AppUIState): string {
+  if (st.pendingSync) return `${st.pendingSync} · ${eyebrow}`;
+  if (st.offline) return `offline · ${eyebrow}`;
+  return eyebrow;
+}
+
 export function renderPage(st: AppUIState): G2PageSpec {
   const port = st.data?.portfolio;
   const alert = getActiveTriggeredAlert(st);
@@ -488,7 +504,7 @@ export function renderPage(st: AppUIState): G2PageSpec {
     const sign = mkt && mkt.change24hPct >= 0 ? '+' : '';
     return buildMinimalHudPage({
       view: 'GLANCE',
-      eyebrow: `glancedesk${openCount > 0 ? ` · ${openCount} open` : ''}`,
+      eyebrow: withSyncStatus(`glancedesk${openCount > 0 ? ` · ${openCount} open` : ''}`, st),
       main: [
         mkt ? `${mkt.symbol} ${formatPx(mkt.markPx)} ${sign}${mkt.change24hPct}%` : 'Connecting...',
         st.toast || 'Telegram: /alert NEAR 4.20 or /risk 242',
@@ -677,9 +693,12 @@ export function renderPage(st: AppUIState): G2PageSpec {
 
     return buildMinimalHudPage({
       view: 'MANAGE',
-      eyebrow: pos
-        ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} (${idxNum}/${allPos.length}) · risk $${pos.riskUsd}`
-        : 'positions · none open',
+      eyebrow: withSyncStatus(
+        pos
+          ? `${pos.symbol.toLowerCase()} ${pos.side.toLowerCase()} (${idxNum}/${allPos.length}) · risk $${pos.riskUsd}`
+          : 'positions · none open',
+        st
+      ),
       main: [
         pos ? `${pos.symbol} ${pos.side} ${rStr}` : 'No open paper positions',
         pos ? `${formatPx(pos.markPx)} (SL ${formatPx(pos.stopLoss)})` : `Cash $${(port?.cashUsd ?? 10000).toFixed(0)}`,

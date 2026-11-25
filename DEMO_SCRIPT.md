@@ -1,10 +1,12 @@
-# GlanceDesk — 2m30s Demo Video Script (Even Hub Simulator)
+# GlanceDesk — 2m Demo Video Script (Even Hub Simulator)
 
-- **0:00 – 0:20 (Problem):** Show Telegram group + Even Hub Simulator side by side. Explain: *"Real traders set structure first on candlesticks (SL & TP), then choose their exact dollar risk so position size auto-calculates — never fixed-RR toys or blind margin presets."*
-- **0:20 – 0:50 (Live Telegram + Coin-Scoped Context):** Send `"BTC breaking out"` in Telegram while an ETH position is already open -> G2 stays cleanly on **BTC 15m OHLC candlesticks** (`Tap` shows `Short BTC` / `Long BTC`, never hijacking to ETH).
-- **0:50 – 1:45 (Structure-First Ticket + On-Glasses 2D Looping Numpad):**
-  - Pick `Long BTC (place SL/TP)` -> **Step 1/3 (`Stop Loss`)**: swipe to slide **`SL` onto the 15m candle structure**.
-  - Tap -> **Step 2/3 (`Take Profit`)**: swipe to slide **`TP`** and see live **`Setup R:R`**.
-  - Tap -> **Step 3/3 (`Enter $ Risk` — 2D Looping Numpad)**: `Down` moves row (wraps), `Up` moves col (wraps), `Tap` picks exact digits (e.g. `$253` or `$25`), **`Double Tap`** confirms into live Risk/Gain/Size review -> `Tap` executes paper order and posts receipt to Telegram.
-- **1:40 – 2:15 (Per-Coin Management):** In `Open Positions`, switch between `BTC` and `ETH`, tap `Move ETH SL to BE`, `Take 50% ETH`, or `Close ETH 100%` (leaves BTC open), posting clean logs to Telegram.
-- **2:15 – 2:30 (Close):** Double-tap on root screen to show mandatory `shutDownPageContainer(1)` exit dialog + passing `npm test`. Done!
+- **0:00 – 0:15 (Live Telegram -> Glasses):** Send `"ETH looks clean for a long, SMT divergence with BTC"` in Telegram -> Even G2 `Glasses Display` immediately surfaces live `ETH` price and borderless OHLC candlesticks on transparent glass.
+- **0:15 – 0:30 (Inline Multi-Timeframe `1m–1D`):** Tap into coin menu -> `Chart TF: 15m (1m-1D)` -> swipe `Up/Down` through `1m · 3m · 5m · 15m · 1h · 2h · 4h · 1D` showing live candlesticks updating and adaptive SL/TP step precision (`±0.05%` on `1m` vs `±1.25%` on `1D`).
+- **0:30 – 1:15 (Structure-First Setup + 2D Looping Numpad + Mandatory `Are You Sure?`):**
+  - Pick `Long ETH` -> **1/3 Stop Loss**: slide `SL` directly onto the candle wick -> `Tap`.
+  - **2/3 Take Profit**: slide `TP` to lock `R:R` -> `Tap`.
+  - **3/3 Enter `$` Risk (2D Looping Numpad)**: `Down` = next row (wraps), `Up` = next col (wraps), `Tap` = pick digits (e.g. `$203`), **`Double Tap`** -> Review screen.
+  - *(Optional 5s safety clip)* Show typing `$12,500` gets hard-blocked (`! BLOCKED · Exceeds cash`), then enter `$203`.
+  - `Tap` -> **Mandatory `Are You Sure?` screen** showing **`Risking 2.0% of balance`** -> second `Tap` executes paper order and posts the auto-sized entry/SL/TP receipt to Telegram.
+- **1:15 – 1:45 (Per-Coin Position Management):** One-tap `Move ETH SL to BE`, `Take 50% ETH`, and `Close ETH 100%` — each posting clean live receipts to Telegram.
+- **1:45 – 2:00 (Clean Exit):** Double-tap on root `GLANCE` -> official Even Hub `shutDownPageContainer(1)` exit confirmation. Done!

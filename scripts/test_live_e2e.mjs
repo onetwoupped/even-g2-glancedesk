@@ -18,6 +18,7 @@ for (const raw of fs.readFileSync(path.join(root, '.env'), 'utf8').split(/\r?\n/
 const runtimeDir = path.join(root, 'server', '.runtime');
 const tg = new TelegramService({
   token: env.TELEGRAM_BOT_TOKEN || '',
+  defaultChatId: env.TELEGRAM_DEFAULT_CHAT_ID || '',
   storagePath: path.join(runtimeDir, 'telegram_cache.json'),
 });
 const hl = new HyperliquidClient(1000);
@@ -36,7 +37,7 @@ if (!latestIn || !tgState.activeChatId) {
         reason: 'No group message received yet via getUpdates',
         bot: tg.botInfo?.username,
         activeChatId: tgState.activeChatId,
-        hint: 'If Group Privacy is ON in BotFather, either ensure bot is Admin or send a message mentioning @sezirneonbot or run /setprivacy -> Disable in @BotFather.',
+        hint: 'Add your bot to a Telegram group as Admin (or disable Group Privacy in @BotFather) and send a message mentioning a coin like ETH or BTC.',
       },
       null,
       2
@@ -51,26 +52,31 @@ const smartReplies = buildSmartReplies(latestIn.text, matched);
 // 1. Send real smart reply back to Telegram
 const sentReply = await tg.sendMessage({
   chatId: latestIn.chatId,
-  text: `[G2] ${smartReplies[0]}`,
+  text: smartReplies[0],
   replyToMessageId: latestIn.messageId,
 });
 
-// 2. Execute simulated paper order at live Hyperliquid mark price + send Telegram receipt
+// 2. Execute risk-sized simulated paper order (1% risk, 0.75% SL, 2.25% TP => 3.0R)
+const entry = matched.markPx;
+const stopLoss = Number((entry * 0.9925).toFixed(4));
+const takeProfit = Number((entry * 1.0225).toFixed(4));
 const order = ledger.placePaperOrder({
   marketId: matched.id,
   symbol: matched.symbol,
   side: 'LONG',
-  notionalUsd: 250,
-  price: matched.markPx,
+  riskUsd: 100,
+  price: entry,
+  stopLoss,
+  takeProfit,
+  idempotencyKey: `e2e_${Date.now()}`,
 });
 
 const sentReceipt = await tg.sendMessage({
   chatId: latestIn.chatId,
   text:
-    `[GlanceDesk G2 · HYPERLIQUID PAPER]\n` +
-    `Perp: ${order.symbol}-PERP\n` +
-    `Action: ${order.side} $${order.notionalUsd} @ ${formatPrice(order.entryPrice)} (${order.sizeQty} ${order.symbol})\n` +
-    `Simulated paper execution only — no real funds.`,
+    `Paper ${order.side} ${order.symbol} @ ${formatPrice(order.entryPrice)}\n` +
+    `Auto-sized: ${order.sizeQty.toFixed(3)} ${order.symbol} ($${order.notionalUsd.toFixed(0)} notional)\n` +
+    `SL ${formatPrice(order.stopLoss)} (-$${order.riskUsd.toFixed(2)}) · TP ${formatPrice(order.takeProfit)} (+$${order.plannedProfitUsd.toFixed(2)} · ${order.plannedRR}R)`,
 });
 
 console.log(

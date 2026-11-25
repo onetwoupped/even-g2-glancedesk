@@ -27,12 +27,12 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 ---
 
 ## Real-Life Edge Cases, Resilience & Path to Live Accounts
-- **Mandatory Two-Step Trade Confirmation + Balance Hard-Block (`$12,500` vs `$125`):**
+- **Mandatory Two-Step Trade Confirmation + Per-Trade Account Cap (`$12,500` vs `$125`):**
   - Every valid trade displays **`Risking X.X% of balance — Are you sure?`** after `Tap to execute` and requires a second confirming tap (with a `! HIGH RISK` callout above `5%` of balance).
-  - Typos exceeding available balance or required isolated margin (e.g. `$12,500` on a `$10,000` account) are **hard-blocked on-lens** and rejected server-side before an order can fire.
-- **Connection Drops Mid-Stop Move (BLE / Network Resilience):**
-  - Every order, Break-Even move, partial close, and full close carries a client-generated **`idempotencyKey`**.
-  - If connectivity drops mid-`Move SL to BE`, GlanceDesk **never pretends it succeeded**: the eyebrow immediately displays `retrying <COIN> BE` and automatically replays the exact idempotent request every 3 seconds until the server confirms — zero silent stop failures, zero duplicate executions.
+  - Hard-blocks BOTH typos exceeding available balance (`$12,500` on `$10,000`) AND oversized bets exceeding your configurable per-trade account cap (`maxRiskPct`, default `10%`, adjustable via `/maxrisk 5` in Telegram) — enforced on-lens and server-side.
+- **Asymmetric Offline Resilience (BLE / Network Drops):**
+  - **Protective actions (`Move SL to BE`, `Take 50%`, `Close 100%`):** Carry an `idempotencyKey`. If connectivity drops mid-stop move, GlanceDesk **never pretends it succeeded**: the eyebrow immediately displays `retrying <COIN> BE` across every view and replays the exact idempotent request every 3 seconds until confirmed — zero silent failures, zero duplicate executions.
+  - **New risk-increasing entries:** Fail fast with `OFFLINE · order NOT sent` so a stale entry never fills minutes later at an unintended price.
 - **Safe Path From Paper to Real Hyperliquid Accounts:**
   - **Hyperliquid Trade-Only API Agent Wallet:** Zero withdrawal permissions — even a compromised phone or proxy cannot move funds out of the account.
   - **Exchange-Native Reduce-Only SL/TP Orders:** Attached on Hyperliquid's orderbook at entry so the stop still executes on-chain even if glasses, phone, and internet all go offline simultaneously.

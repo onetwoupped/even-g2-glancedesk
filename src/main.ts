@@ -105,7 +105,7 @@ function updateStatusBar(): void {
   const openSyms = port.positions.map((p) => p.symbol).join(', ');
   const tf = getActiveTimeframe(ui);
   statusEl.innerHTML =
-    `<strong>Telegram:</strong> @${tg.botUsername || 'sezirneonbot'} ` +
+    `<strong>Telegram:</strong> @${tg.botUsername || 'telegram_bot'} ` +
     `(${tg.activeChatId ? tg.activeChatTitle || tg.activeChatId : 'waiting'}) · ` +
     `<strong>Hyperliquid:</strong> ${ui.data.markets.length} perps (${tf.label}) · ` +
     `<strong>Paper:</strong> $${port.cashUsd.toFixed(0)} (${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}) · ` +
@@ -594,7 +594,14 @@ async function handleGesture(g: Gesture): Promise<void> {
         await ensureActiveCandles();
         await paint(true);
       } catch (err) {
-        ui.toast = String((err as Error)?.message || err).slice(0, 26);
+        // Asymmetric offline policy: protective stop/close moves retry, NEW entries fail fast (never stale-fill!)
+        if (isNetworkError(err)) {
+          ui.offline = true;
+          ui.toast = 'OFFLINE · order NOT sent';
+          log(`Connection dropped during new order — failed fast so no stale entry fills later`);
+        } else {
+          ui.toast = String((err as Error)?.message || err).slice(0, 26);
+        }
         ui.view = 'GLANCE';
         ui.lockedSymbol = null;
         await paint(true);
