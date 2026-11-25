@@ -165,6 +165,7 @@ export async function placePaperOrder(params: {
   price: number;
   stopLoss: number;
   takeProfit: number;
+  idempotencyKey?: string;
   notifyTelegram?: boolean;
 }): Promise<{ ok: boolean; portfolio: PortfolioSnapshot; receiptSent: boolean }> {
   return requestJson('/api/paper/order', {
@@ -173,30 +174,38 @@ export async function placePaperOrder(params: {
   });
 }
 
-export async function moveStopToBE(positionId?: string): Promise<{
+export async function moveStopToBE(
+  positionId?: string,
+  idempotencyKey?: string
+): Promise<{
   ok: boolean;
   position: PaperPosition;
   portfolio: PortfolioSnapshot;
 }> {
   return requestJson('/api/paper/be', {
     method: 'POST',
-    body: JSON.stringify({ positionId, notifyTelegram: true }),
+    body: JSON.stringify({ positionId, idempotencyKey, notifyTelegram: true }),
   });
 }
 
-export async function takePartialProfit(positionId?: string, ratio = 0.5): Promise<{
+export async function takePartialProfit(
+  positionId?: string,
+  ratio = 0.5,
+  idempotencyKey?: string
+): Promise<{
   ok: boolean;
   partial: { symbol: string; realizedPnlUsd: number };
   portfolio: PortfolioSnapshot;
 }> {
   return requestJson('/api/paper/partial', {
     method: 'POST',
-    body: JSON.stringify({ positionId, ratio, notifyTelegram: true }),
+    body: JSON.stringify({ positionId, ratio, idempotencyKey, notifyTelegram: true }),
   });
 }
 
 export async function closePaperPosition(params: {
   positionId?: string;
+  idempotencyKey?: string;
   notifyTelegram?: boolean;
 }): Promise<{
   ok: boolean;

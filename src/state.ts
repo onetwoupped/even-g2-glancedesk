@@ -27,6 +27,9 @@ export interface AppUIState {
   riskDraft: string; // Unrestricted digit string typed via 2D numpad (e.g. "35", "253", "12500")
   padRow: number; // 0..3 (SWIPE_DOWN moves down & wraps)
   padCol: number; // 0..2 (SWIPE_UP moves right & wraps)
+  confirmArmed: boolean; // Second-tap "ARE YOU SURE?" gate when risk > 5% of account equity
+  offline: boolean; // True when backend/network is unreachable
+  pendingSync: string; // Non-empty while a stop-move/close is queued for idempotent retry
   toast: string;
   data: BackendState | null;
   candles: CandleSeries | null;
@@ -76,10 +79,63 @@ export function createInitialUIState(): AppUIState {
     riskDraft: '',
     padRow: 0,
     padCol: 0,
+    confirmArmed: false,
+    offline: false,
+    pendingSync: '',
     toast: '',
     data: null,
     candles: null,
   };
+}
+
+export interface RiskGuardResult {
+  level: 'OK' | 'WARN' | 'BLOCKED';
+  riskPct: number;
+  marginUsd: number;
+  reason: string;
+}
+
+/**
+ * Fat-finger & Account-Size Risk Guardrail:
+ * - Catches numpad slips like $12,500 instead of $125 BEFORE execution.
+ * - BLOCKED: risk or required isolated margin exceeds available paper balance.
+ * - WARN: risk > 5% of account equity -> requires an explicit second "ARE YOU SURE?" tap.
+ * - OK: <= 5% equity -> fast 1-tap execution with zero extra friction.
+ */
+export function evaluateRiskGuard(
+  calc: { riskUsd: number; notionalUsd: number },
+  portfolio: { cashUsd: number; equityUsd: number } | null | undefined
+): RiskGuardResult {
+  const cash = portfolio?.cashUsd ?? 10000;
+  const equity = Math.max(1, portfolio?.equityUsd ?? cash);
+  const riskPct = Number(((calc.riskUsd / equity) * 100).toFixed(1));
+  const marginUsd = Number(Math.max(calc.riskUsd, calc.notionalUsd / 50).toFixed(2));
+
+  if (calc.riskUsd > cash) {
+    return {
+      level: 'BLOCKED',
+      riskPct,
+      marginUsd,
+      reason: `Exceeds cash ($${cash.toFixed(0)})`,
+    };
+  }
+  if (marginUsd > cash) {
+    return {
+      level: 'BLOCKED',
+      riskPct,
+      marginUsd,
+      reason: `Needs $${marginUsd.toFixed(0)} margin`,
+    };
+  }
+  if (riskPct > 5) {
+    return {
+      level: 'WARN',
+      riskPct,
+      marginUsd,
+      reason: `${riskPct}% of equity`,
+    };
+  }
+  return { level: 'OK', riskPct, marginUsd, reason: '' };
 }
 
 /**
@@ -376,9 +432,10 @@ export function renderPage(st: AppUIState): G2PageSpec {
         : undefined;
 
       const openTag = openCount > 0 ? ` · ${openCount} open` : '';
+      const syncTag = st.pendingSync ? ` · ${st.pendingSync}` : st.offline ? ' · offline' : '';
       return buildMinimalHudPage({
         view: 'GLANCE',
-        eyebrow: `${truncate(msg.sender, 16)} · ${fmtAge(msg.timestamp)}${openTag}${st.toast ? ` · ${st.toast}` : ''}`,
+        eyebrow: `${truncate(msg.sender, 14)} · ${fmtAge(msg.timestamp)}${openTag}${syncTag || (st.toast ? ` · ${st.toast}` : '')}`,
         main: [
           truncate(msg.text, 68),
           '',
@@ -478,10 +535,54 @@ export function renderPage(st: AppUIState): G2PageSpec {
     });
   }
 
-  // 5. REVIEW & EXECUTE (SHOWS EXACT RISK, TARGET GAIN, AUTO-SIZED QTY, SL/TP)
+  // 5. REVIEW & EXECUTE (WITH FAT-FINGER GUARDRAIL + "ARE YOU SURE?" HIGH-RISK GATE)
   if (st.view === 'TICKET_CONFIRM') {
     const px = mkt?.markPx || 0;
     const calc = computeRiskTicket(st, px);
+    const guard = evaluateRiskGuard(calc, port);
+    const chartLevels: G2ChartLevel[] = [
+      { price: calc.stopLoss, label: 'SL', emphasized: true },
+      { price: px, label: 'IN', emphasized: false },
+      { price: calc.takeProfit, label: 'TP', emphasized: true },
+    ];
+
+    if (guard.level === 'BLOCKED') {
+      return buildMinimalHudPage({
+        view: 'TICKET_CONFIRM',
+        eyebrow: `! blocked · fat-finger guard`,
+        main: [
+          `! Risk -$${calc.riskUsd} (${guard.riskPct}% eq)`,
+          `${guard.reason}`,
+          `Size  ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
+          `Execution blocked`,
+          `› Double-tap to edit $ risk`,
+        ].join('\n'),
+        hint: 'dbl edit $ risk · swipe edit TP',
+        chart: buildChart(st, mkt, chartLevels),
+      });
+    }
+
+    if (guard.level === 'WARN' && st.confirmArmed) {
+      return buildMinimalHudPage({
+        view: 'TICKET_CONFIRM',
+        eyebrow: `! are you sure? · ${guard.riskPct}% equity`,
+        main: [
+          `! HIGH RISK -$${calc.riskUsd} (${guard.riskPct}%)`,
+          `Gain  +$${calc.profitUsd.toFixed(0)} (${calc.rr}R)`,
+          `Size  ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
+          `SL ${formatPx(calc.stopLoss)} · TP ${formatPx(calc.takeProfit)}`,
+          `› Tap AGAIN to confirm`,
+        ].join('\n'),
+        hint: 'tap confirm high risk · dbl edit $',
+        chart: buildChart(st, mkt, chartLevels),
+      });
+    }
+
+    const actionLine =
+      guard.level === 'WARN'
+        ? `! High risk (${guard.riskPct}% eq) · tap`
+        : `Tap execute · dbl edit $`;
+
     return buildMinimalHudPage({
       view: 'TICKET_CONFIRM',
       eyebrow: `confirm paper · ${(mkt?.symbol || 'perp').toLowerCase()} ${st.ticketSide.toLowerCase()}`,
@@ -489,15 +590,11 @@ export function renderPage(st: AppUIState): G2PageSpec {
         `› Risk -$${calc.riskUsd} -> +$${calc.profitUsd.toFixed(0)}`,
         `Size  ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
         `SL ${formatPx(calc.stopLoss)} · TP ${formatPx(calc.takeProfit)}`,
-        `Reward  ${calc.rr}R`,
-        `Tap execute · dbl edit $`,
+        `Reward  ${calc.rr}R (${guard.riskPct}% eq)`,
+        actionLine,
       ].join('\n'),
       hint: 'tap execute · dbl edit $ · swipe TP',
-      chart: buildChart(st, mkt, [
-        { price: calc.stopLoss, label: 'SL', emphasized: true },
-        { price: px, label: 'IN', emphasized: false },
-        { price: calc.takeProfit, label: 'TP', emphasized: true },
-      ]),
+      chart: buildChart(st, mkt, chartLevels),
     });
   }
 

@@ -16,6 +16,7 @@ export class PaperLedger {
       positions: [],
       closed: [],
       alerts: [],
+      processedKeys: {}, // Idempotency map so BLE/network retries never double-execute
       updatedAt: new Date().toISOString(),
     };
     this.load();
@@ -35,6 +36,7 @@ export class PaperLedger {
           positions: raw.positions,
           closed: Array.isArray(raw.closed) ? raw.closed : [],
           alerts: Array.isArray(raw.alerts) ? raw.alerts : [],
+          processedKeys: raw.processedKeys && typeof raw.processedKeys === 'object' ? raw.processedKeys : {},
           updatedAt: raw.updatedAt || new Date().toISOString(),
         };
       }
@@ -60,6 +62,7 @@ export class PaperLedger {
       positions: [],
       closed: [],
       alerts: [],
+      processedKeys: {},
       updatedAt: new Date().toISOString(),
     };
     this.save();
@@ -76,8 +79,29 @@ export class PaperLedger {
     return { defaultRiskUsd: this.state.defaultRiskUsd };
   }
 
+  _rememberKey(key, result) {
+    if (!key) return;
+    if (!this.state.processedKeys || typeof this.state.processedKeys !== 'object') {
+      this.state.processedKeys = {};
+    }
+    this.state.processedKeys[key] = result;
+    const keys = Object.keys(this.state.processedKeys);
+    if (keys.length > 100) {
+      for (const oldKey of keys.slice(0, keys.length - 100)) {
+        delete this.state.processedKeys[oldKey];
+      }
+    }
+  }
+
+  _getKey(key) {
+    if (!key || !this.state.processedKeys) return null;
+    return Object.prototype.hasOwnProperty.call(this.state.processedKeys, key)
+      ? this.state.processedKeys[key]
+      : null;
+  }
+
   /**
-   * True Risk-Based Position Sizing (1R Sizing):
+   * True Risk-Based Position Sizing (1R Sizing) with Fat-Finger Guard + Idempotency:
    * User picks exact $ risk (e.g. $100, $242, $850), exact SL, and exact TP.
    * Position size automatically solves:
    *   sizeQty = riskUsd / |entry - stopLoss|
@@ -85,7 +109,10 @@ export class PaperLedger {
    *   plannedProfitUsd = |takeProfit - entry| * sizeQty
    * Hitting SL loses EXACTLY riskUsd.
    */
-  placePaperOrder({ marketId, symbol, side, riskUsd, price, stopLoss, takeProfit }) {
+  placePaperOrder({ marketId, symbol, side, riskUsd, price, stopLoss, takeProfit, idempotencyKey }) {
+    const cached = this._getKey(idempotencyKey);
+    if (cached) return cached;
+
     const cleanSide = String(side || '').toUpperCase();
     if (cleanSide !== 'LONG' && cleanSide !== 'SHORT') {
       throw new Error('Side must be LONG or SHORT');
@@ -94,8 +121,11 @@ export class PaperLedger {
     if (!Number.isFinite(entry) || entry <= 0) throw new Error('Mark price must be positive');
 
     const risk = Number(riskUsd ?? this.state.defaultRiskUsd);
-    if (!Number.isFinite(risk) || risk < 1 || risk > 50000) {
-      throw new Error('Risk amount must be between $1 and $50,000');
+    if (!Number.isFinite(risk) || risk < 1) {
+      throw new Error('Risk amount must be at least $1');
+    }
+    if (risk > this.state.cashUsd) {
+      throw new Error(`Fat-finger guard: risk $${risk.toFixed(0)} exceeds available balance ($${this.state.cashUsd.toFixed(0)})`);
     }
 
     const slPx = Number(stopLoss);
@@ -145,21 +175,30 @@ export class PaperLedger {
 
     this.state.cashUsd = Number((this.state.cashUsd - order.marginUsd).toFixed(2));
     this.state.positions.unshift(order);
+    this._rememberKey(idempotencyKey, order);
     this.save();
     return order;
   }
 
-  moveStopToBreakEven(positionId) {
+  moveStopToBreakEven(positionId, idempotencyKey) {
+    const cached = this._getKey(idempotencyKey);
+    if (cached) return cached;
+
     const idx = positionId ? this.state.positions.findIndex((p) => p.id === positionId) : 0;
     if (idx < 0 || idx >= this.state.positions.length) throw new Error('No open position found');
     const pos = this.state.positions[idx];
     pos.stopLoss = pos.entryPrice;
     pos.isBreakEven = true;
+    const out = { ...pos };
+    this._rememberKey(idempotencyKey, out);
     this.save();
-    return { ...pos };
+    return out;
   }
 
-  takePartialProfit(positionId, ratio = 0.5, markPrice) {
+  takePartialProfit(positionId, ratio = 0.5, markPrice, idempotencyKey) {
+    const cached = this._getKey(idempotencyKey);
+    if (cached) return cached;
+
     const idx = positionId ? this.state.positions.findIndex((p) => p.id === positionId) : 0;
     if (idx < 0 || idx >= this.state.positions.length) throw new Error('No open position found');
     const pos = this.state.positions[idx];
@@ -178,9 +217,8 @@ export class PaperLedger {
     pos.notionalUsd = Number((pos.notionalUsd - closeNotional).toFixed(2));
     this.state.cashUsd = Number((this.state.cashUsd + Math.max(0, closeMargin + realizedPnlUsd)).toFixed(2));
     this.state.realizedPnlUsd = Number((this.state.realizedPnlUsd + realizedPnlUsd).toFixed(2));
-    this.save();
 
-    return {
+    const out = {
       positionId: pos.id,
       symbol: pos.symbol,
       side: pos.side,
@@ -189,9 +227,15 @@ export class PaperLedger {
       realizedPnlUsd,
       remainingNotionalUsd: pos.notionalUsd,
     };
+    this._rememberKey(idempotencyKey, out);
+    this.save();
+    return out;
   }
 
-  closePosition(positionId, closePrice, reason = 'MANUAL') {
+  closePosition(positionId, closePrice, reason = 'MANUAL', idempotencyKey) {
+    const cached = this._getKey(idempotencyKey);
+    if (cached) return cached;
+
     const idx = positionId ? this.state.positions.findIndex((p) => p.id === positionId) : 0;
     if (idx < 0 || idx >= this.state.positions.length) throw new Error('No open paper position found to close');
     const pos = this.state.positions[idx];
@@ -216,6 +260,7 @@ export class PaperLedger {
     };
     this.state.closed.unshift(closedRecord);
     this.state.closed = this.state.closed.slice(0, 25);
+    this._rememberKey(idempotencyKey, closedRecord);
     this.save();
     return closedRecord;
   }

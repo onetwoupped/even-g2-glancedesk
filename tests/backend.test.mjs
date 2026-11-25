@@ -245,13 +245,74 @@ test('Multi-position isolation: closing ETH 100% leaves open BTC position comple
   }
 });
 
-test('UX invariants in src/state.ts: 2D looping numpad, no "Close all", no 50/100/200 preset carousel, coin lock', () => {
+test('UX invariants in src/state.ts: 2D looping numpad, fat-finger guard, no "Close all", coin lock', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'state.ts'), 'utf8');
   assert.doesNotMatch(src, /Close all/i, 'Ambiguous "Close all" label must not exist');
   assert.doesNotMatch(src, /RISK_MULTIPLIERS/, 'Artificial 0.5R/1R/2R multiplier carousel must not exist');
   assert.doesNotMatch(src, /adjustRiskUsd/, 'Fixed-step swipe jump must not exist');
   assert.match(src, /RISK_NUMPAD/, 'Must include 2D looping numpad for unrestricted exact $ risk entry');
   assert.match(src, /formatNumpadRows/, 'Must render 2D numpad rows on glasses');
+  assert.match(src, /evaluateRiskGuard/, 'Must include fat-finger & high-risk "ARE YOU SURE?" guardrail');
   assert.match(src, /Close \$\{sym\} 100%/, 'Must explicitly name the coin being closed (Close <SYM> 100%)');
   assert.match(src, /lockedSymbol/, 'Must lock active coin context so unrelated open positions never hijack feed messages');
+});
+
+test('Fat-finger guard ($12,500 slip on $10,000 balance) & idempotent retry safety on dropped connections', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glancedesk-safety-'));
+  const file = path.join(tmpDir, 'ledger.json');
+  try {
+    const ledger = new PaperLedger(file);
+
+    // 1. Fat-finger slip: $12,500 instead of $125 on a $10,000 account -> hard blocked
+    assert.throws(() => {
+      ledger.placePaperOrder({
+        marketId: 'ETH-PERP',
+        symbol: 'ETH',
+        side: 'LONG',
+        riskUsd: 12500,
+        price: 2000,
+        stopLoss: 1980,
+        takeProfit: 2060,
+        idempotencyKey: 'ord_slip_1',
+      });
+    }, /Fat-finger guard/);
+    assert.equal(ledger.snapshot([]).openCount, 0);
+
+    // 2. Idempotent order retry (BLE/network drop replay with same idempotencyKey never double-opens)
+    const first = ledger.placePaperOrder({
+      marketId: 'ETH-PERP',
+      symbol: 'ETH',
+      side: 'LONG',
+      riskUsd: 125,
+      price: 2000,
+      stopLoss: 1980,
+      takeProfit: 2060,
+      idempotencyKey: 'ord_retry_1',
+    });
+    const replay = ledger.placePaperOrder({
+      marketId: 'ETH-PERP',
+      symbol: 'ETH',
+      side: 'LONG',
+      riskUsd: 125,
+      price: 2000,
+      stopLoss: 1980,
+      takeProfit: 2060,
+      idempotencyKey: 'ord_retry_1',
+    });
+    assert.equal(replay.id, first.id);
+    assert.equal(ledger.snapshot([]).openCount, 1);
+
+    // 3. Idempotent BE & 50% partial retry never double-executes
+    const be1 = ledger.moveStopToBreakEven(first.id, 'be_retry_1');
+    const be2 = ledger.moveStopToBreakEven(first.id, 'be_retry_1');
+    assert.equal(be1.stopLoss, 2000);
+    assert.equal(be2.stopLoss, 2000);
+
+    const half1 = ledger.takePartialProfit(first.id, 0.5, 2040, 'half_retry_1');
+    const half2 = ledger.takePartialProfit(first.id, 0.5, 2040, 'half_retry_1');
+    assert.equal(half2.realizedPnlUsd, half1.realizedPnlUsd);
+    assert.equal(ledger.snapshot([{ symbol: 'ETH', markPx: 2040 }]).realizedPnlUsd, half1.realizedPnlUsd);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

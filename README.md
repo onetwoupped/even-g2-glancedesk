@@ -25,6 +25,24 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 
 ---
 
+## Real-Life Edge Cases, Resilience & Path to Live Accounts
+- **3-Tier Fat-Finger Guard (`$12,500` vs `$125` slip protection):**
+  - `<= 5%` of account equity -> fast 1-tap execution on the Confirm screen (zero extra friction).
+  - `> 5%` of account equity -> triggers an explicit second **`! ARE YOU SURE? (X% equity)`** confirmation gate before sending.
+  - Exceeding available balance or required isolated margin (e.g., accidentally typing `$12,500` on a `$10,000` account) -> **hard-blocked on-lens** and rejected server-side before an order can fire.
+- **Connection Drops Mid-Stop Move (BLE / Network Resilience):**
+  - Every order, Break-Even move, partial close, and full close carries a client-generated **`idempotencyKey`**.
+  - If connectivity drops mid-`Move SL to BE`, GlanceDesk **never pretends it succeeded**: the eyebrow immediately displays `retrying <COIN> BE` and automatically replays the exact idempotent request every 3 seconds until the server confirms — zero silent stop failures, zero duplicate executions.
+- **Safe Path From Paper to Real Hyperliquid Accounts:**
+  - **Hyperliquid Trade-Only API Agent Wallet:** Zero withdrawal permissions — even a compromised phone or proxy cannot move funds out of the account.
+  - **Exchange-Native Reduce-Only SL/TP Orders:** Attached on Hyperliquid's orderbook at entry so the stop still executes on-chain even if glasses, phone, and internet all go offline simultaneously.
+  - **Daily Drawdown Circuit Breaker + Phone Biometric Sign-Off:** Hard daily loss cap enforced before signing, plus phone FaceID/fingerprint sign-off for any risk above the user's configured threshold.
+- **Daily Users & Monetization:**
+  - Built for busy active perp traders (students, engineers, founders, funded-account traders) who already monitor Telegram alpha groups and Hyperliquid, and miss Break-Even moves or clean setups during lectures, meetings, or commutes.
+  - Sustainable dual model: affordable **Pro subscription (`$9–$19/mo`)** for multi-account API-wallet execution, custom Telegram alert routing, and journal sync, paired with opt-in **Hyperliquid Builder Code fee share** (`1–3 bps` on live volume).
+
+---
+
 ## Hardware & Store QA Compliance
 - **Calibrated on Real Even Hub Simulator (`@evenrealities/evenhub-simulator`):** `eyebrow` and `hint` heights tuned to `34px` to eliminate LVGL single-line scrollbars; `220 × 142` OHLC image container strictly within the `288 × 144` hardware cap.
 - **Official SDK Validated (`validateEvenHubPageContainer`):** 3 borderless text zones (`textColor: 4` primary / `textColor: 1` whisper metadata) + sequential coalesced `updateImageRawData` for smooth SL/TP sliding + native `menuObject`.
@@ -39,7 +57,7 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 ```bash
 npm install
 cp .env.example .env   # Paste your TELEGRAM_BOT_TOKEN
-npm test               # Runs 9 unit, multi-position & official SDK validation tests
+npm test               # Runs 10 unit, safety-guard & official SDK validation tests
 npm run server         # Terminal 1 — Backend proxy (:8787)
 npm run dev            # Terminal 2 — Glasses WebView (:5173)
 npm run sim            # Terminal 3 — Official Even Hub G2 Simulator

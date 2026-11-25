@@ -292,6 +292,7 @@ const server = http.createServer(async (req, res) => {
         price: fillPrice,
         stopLoss: Number(body.stopLoss),
         takeProfit: Number(body.takeProfit),
+        idempotencyKey: body.idempotencyKey,
       });
 
       const receiptSent =
@@ -314,7 +315,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/paper/be') {
       const body = await readJsonBody(req);
       const hlState = await hyperliquid.getMarkets();
-      const pos = ledger.moveStopToBreakEven(body.positionId);
+      const pos = ledger.moveStopToBreakEven(body.positionId, body.idempotencyKey);
       const receiptSent =
         body.notifyTelegram !== false
           ? await notifyTg(`Stop moved to BE (${formatPrice(pos.stopLoss)}) on ${pos.side} ${pos.symbol}.`)
@@ -331,7 +332,7 @@ const server = http.createServer(async (req, res) => {
         : snap.positions[0];
       if (!target) throw new Error('No open position for partial close');
 
-      const partial = ledger.takePartialProfit(target.id, Number(body.ratio || 0.5), target.markPx);
+      const partial = ledger.takePartialProfit(target.id, Number(body.ratio || 0.5), target.markPx, body.idempotencyKey);
       const sign = partial.realizedPnlUsd >= 0 ? '+' : '';
       const receiptSent =
         body.notifyTelegram !== false
@@ -352,7 +353,7 @@ const server = http.createServer(async (req, res) => {
         : snapBefore.positions[0];
       if (!target) throw new Error('No open paper position to close');
 
-      const closed = ledger.closePosition(target.id, target.markPx, 'MANUAL');
+      const closed = ledger.closePosition(target.id, target.markPx, 'MANUAL', body.idempotencyKey);
       const sign = closed.realizedPnlUsd >= 0 ? '+' : '';
       const receiptSent =
         body.notifyTelegram !== false

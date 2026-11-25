@@ -15,6 +15,7 @@ import {
   RISK_NUMPAD,
   computeRiskTicket,
   createInitialUIState,
+  evaluateRiskGuard,
   formatPx,
   getActiveFeedMessage,
   getActiveMarket,
@@ -38,6 +39,54 @@ const riskInput = document.getElementById('inp-risk') as HTMLInputElement | null
 
 const ui = createInitialUIState();
 let host: GlassesHost | null = null;
+
+interface QueuedAction {
+  idempotencyKey: string;
+  label: string;
+  run: () => Promise<void>;
+}
+const pendingQueue: QueuedAction[] = [];
+let flushingQueue = false;
+
+function makeActionKey(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function isNetworkError(err: unknown): boolean {
+  const msg = String((err as Error)?.message || err);
+  return err instanceof TypeError || /Failed to fetch|NetworkError|ECONN|Load failed|timeout/i.test(msg);
+}
+
+async function flushPendingQueue(): Promise<void> {
+  if (flushingQueue || pendingQueue.length === 0) return;
+  flushingQueue = true;
+  try {
+    while (pendingQueue.length > 0) {
+      const next = pendingQueue[0];
+      try {
+        await next.run();
+        pendingQueue.shift();
+        ui.offline = false;
+        ui.pendingSync = pendingQueue.length > 0 ? pendingQueue[0].label : '';
+        log(`Synced queued action: ${next.label}`);
+        await paint(false);
+      } catch (err) {
+        if (isNetworkError(err)) {
+          ui.offline = true;
+          ui.pendingSync = next.label;
+          break;
+        }
+        // Server rejected with definitive business error -> drop from queue
+        pendingQueue.shift();
+        ui.pendingSync = pendingQueue.length > 0 ? pendingQueue[0].label : '';
+        ui.toast = String((err as Error)?.message || err).slice(0, 26);
+        await paint(false);
+      }
+    }
+  } finally {
+    flushingQueue = false;
+  }
+}
 
 function log(msg: string): void {
   const ts = new Date().toLocaleTimeString();
@@ -83,6 +132,7 @@ async function syncState(refresh = false): Promise<void> {
   try {
     const prevDefaultRisk = ui.data?.portfolio.defaultRiskUsd;
     ui.data = await fetchBackendState(refresh);
+    ui.offline = false;
 
     // Sync /risk <amount> changes made in Telegram live into active ticket
     if (ui.data.portfolio.defaultRiskUsd && ui.data.portfolio.defaultRiskUsd !== prevDefaultRisk) {
@@ -96,8 +146,10 @@ async function syncState(refresh = false): Promise<void> {
       ui.candles = ui.data.candles;
     }
     await ensureActiveCandles();
+    if (pendingQueue.length > 0) void flushPendingQueue();
     await paint(false);
   } catch (err) {
+    ui.offline = true;
     log(`Sync error: ${String((err as Error)?.message || err)}`);
     await paint(false);
   }
@@ -112,10 +164,25 @@ async function executeAction(action: HudAction): Promise<void> {
 
   try {
     if (action.kind === 'MOVE_BE' && targetPos) {
-      const res = await moveStopToBE(targetPos.id);
-      if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = `${targetPos.symbol} BE @ ${formatPx(res.position.stopLoss)}`;
-      log(`Moved ${targetPos.symbol} stop to BE`);
+      const key = makeActionKey('be');
+      const runBE = async () => {
+        const res = await moveStopToBE(targetPos.id, key);
+        if (ui.data) ui.data.portfolio = res.portfolio;
+        ui.toast = `${targetPos.symbol} BE @ ${formatPx(res.position.stopLoss)}`;
+        log(`Moved ${targetPos.symbol} stop to BE`);
+      };
+      try {
+        await runBE();
+      } catch (err) {
+        if (isNetworkError(err)) {
+          ui.offline = true;
+          ui.pendingSync = `retrying ${targetPos.symbol} BE`;
+          pendingQueue.push({ idempotencyKey: key, label: ui.pendingSync, run: runBE });
+          log(`Connection dropped while moving ${targetPos.symbol} SL to BE — queued idempotent retry`);
+        } else {
+          throw err;
+        }
+      }
       ui.view = 'GLANCE';
       ui.lockedSymbol = null;
       await paint(true);
@@ -123,10 +190,25 @@ async function executeAction(action: HudAction): Promise<void> {
     }
 
     if (action.kind === 'TAKE_HALF' && targetPos) {
-      const res = await takePartialProfit(targetPos.id, 0.5);
-      if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = `50% ${targetPos.symbol} (${res.partial.realizedPnlUsd >= 0 ? '+' : ''}$${res.partial.realizedPnlUsd.toFixed(1)})`;
-      log(`Closed 50% of ${targetPos.symbol}`);
+      const key = makeActionKey('half');
+      const runHalf = async () => {
+        const res = await takePartialProfit(targetPos.id, 0.5, key);
+        if (ui.data) ui.data.portfolio = res.portfolio;
+        ui.toast = `50% ${targetPos.symbol} (${res.partial.realizedPnlUsd >= 0 ? '+' : ''}$${res.partial.realizedPnlUsd.toFixed(1)})`;
+        log(`Closed 50% of ${targetPos.symbol}`);
+      };
+      try {
+        await runHalf();
+      } catch (err) {
+        if (isNetworkError(err)) {
+          ui.offline = true;
+          ui.pendingSync = `retrying 50% ${targetPos.symbol}`;
+          pendingQueue.push({ idempotencyKey: key, label: ui.pendingSync, run: runHalf });
+          log(`Connection dropped during 50% close — queued idempotent retry`);
+        } else {
+          throw err;
+        }
+      }
       ui.view = 'GLANCE';
       ui.lockedSymbol = null;
       await paint(true);
@@ -134,10 +216,25 @@ async function executeAction(action: HudAction): Promise<void> {
     }
 
     if (action.kind === 'CLOSE_POS' && targetPos) {
-      const res = await closePaperPosition({ positionId: targetPos.id, notifyTelegram: true });
-      if (ui.data) ui.data.portfolio = res.portfolio;
-      ui.toast = `Closed ${targetPos.symbol} (${res.closed.realizedPnlUsd >= 0 ? '+' : ''}$${res.closed.realizedPnlUsd.toFixed(1)})`;
-      log(`Closed 100% of ${targetPos.symbol} @ ${formatPx(res.closed.exitPrice)}`);
+      const key = makeActionKey('close');
+      const runClose = async () => {
+        const res = await closePaperPosition({ positionId: targetPos.id, idempotencyKey: key, notifyTelegram: true });
+        if (ui.data) ui.data.portfolio = res.portfolio;
+        ui.toast = `Closed ${targetPos.symbol} (${res.closed.realizedPnlUsd >= 0 ? '+' : ''}$${res.closed.realizedPnlUsd.toFixed(1)})`;
+        log(`Closed 100% of ${targetPos.symbol} @ ${formatPx(res.closed.exitPrice)}`);
+      };
+      try {
+        await runClose();
+      } catch (err) {
+        if (isNetworkError(err)) {
+          ui.offline = true;
+          ui.pendingSync = `retrying close ${targetPos.symbol}`;
+          pendingQueue.push({ idempotencyKey: key, label: ui.pendingSync, run: runClose });
+          log(`Connection dropped during close — queued idempotent retry`);
+        } else {
+          throw err;
+        }
+      }
       ui.view = 'GLANCE';
       ui.lockedSymbol = null;
       await paint(true);
@@ -328,6 +425,7 @@ async function handleGesture(g: Gesture): Promise<void> {
         ui.riskUsd = parsed;
         if (riskInput) riskInput.value = String(ui.riskUsd);
       }
+      ui.confirmArmed = false;
       ui.view = 'TICKET_CONFIRM';
       await paint(true);
     };
@@ -378,9 +476,10 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // REVIEW & EXECUTE SCREEN (reached via DOUBLE_TAP or OK from Numpad)
+  // REVIEW & EXECUTE SCREEN (FAT-FINGER GUARDRAIL + "ARE YOU SURE?" HIGH-RISK GATE)
   if (ui.view === 'TICKET_CONFIRM') {
     if (g === 'DOUBLE_TAP') {
+      ui.confirmArmed = false;
       ui.riskDraft = String(Math.round(ui.riskUsd));
       ui.padRow = 0;
       ui.padCol = 0;
@@ -389,6 +488,7 @@ async function handleGesture(g: Gesture): Promise<void> {
       return;
     }
     if (g === 'SWIPE_UP' || g === 'SWIPE_DOWN') {
+      ui.confirmArmed = false;
       ui.view = 'TICKET_TP';
       await paint(true);
       return;
@@ -403,6 +503,24 @@ async function handleGesture(g: Gesture): Promise<void> {
         return;
       }
       const calc = computeRiskTicket(ui, mkt.markPx);
+      const guard = evaluateRiskGuard(calc, ui.data?.portfolio);
+
+      // Tier 1: Hard-block impossible/fat-finger risk (e.g. $12,500 on $10,000 account)
+      if (guard.level === 'BLOCKED') {
+        log(`Fat-finger guard blocked $${calc.riskUsd} (${guard.reason})`);
+        await paint(false);
+        return;
+      }
+
+      // Tier 2: High risk (>5% equity) requires explicit second "ARE YOU SURE?" tap
+      if (guard.level === 'WARN' && !ui.confirmArmed) {
+        ui.confirmArmed = true;
+        log(`High-risk gate armed: $${calc.riskUsd} (${guard.riskPct}% equity) — tap again to confirm`);
+        await paint(false);
+        return;
+      }
+
+      ui.confirmArmed = false;
       try {
         const res = await placePaperOrder({
           marketId: mkt.id,
@@ -412,6 +530,7 @@ async function handleGesture(g: Gesture): Promise<void> {
           price: mkt.markPx,
           stopLoss: calc.stopLoss,
           takeProfit: calc.takeProfit,
+          idempotencyKey: makeActionKey('ord'),
           notifyTelegram: true,
         });
         if (ui.data) ui.data.portfolio = res.portfolio;
@@ -540,6 +659,7 @@ async function boot(): Promise<void> {
 
   await syncState(true);
   setInterval(() => void syncState(false), 8000);
+  setInterval(() => void flushPendingQueue(), 3000);
 }
 
 void boot();
