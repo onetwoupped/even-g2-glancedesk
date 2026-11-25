@@ -14,7 +14,12 @@ import {
 } from '@evenrealities/even_hub_sdk';
 
 import { PaperLedger } from '../server/ledger.mjs';
-import { matchMarketToText, normalizeHyperliquidMarkets } from '../server/hyperliquid.mjs';
+import {
+  SUPPORTED_INTERVALS,
+  matchMarketToText,
+  normalizeHyperliquidMarkets,
+  normalizeInterval,
+} from '../server/hyperliquid.mjs';
 import { buildSmartReplies } from '../server/telegram.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -245,16 +250,26 @@ test('Multi-position isolation: closing ETH 100% leaves open BTC position comple
   }
 });
 
-test('UX invariants in src/state.ts: 2D looping numpad, fat-finger guard, no "Close all", coin lock', () => {
+test('UX invariants in src/state.ts: 2D looping numpad, 1m-1D multi-TF, universal Are You Sure, coin lock', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'state.ts'), 'utf8');
   assert.doesNotMatch(src, /Close all/i, 'Ambiguous "Close all" label must not exist');
   assert.doesNotMatch(src, /RISK_MULTIPLIERS/, 'Artificial 0.5R/1R/2R multiplier carousel must not exist');
   assert.doesNotMatch(src, /adjustRiskUsd/, 'Fixed-step swipe jump must not exist');
   assert.match(src, /RISK_NUMPAD/, 'Must include 2D looping numpad for unrestricted exact $ risk entry');
   assert.match(src, /formatNumpadRows/, 'Must render 2D numpad rows on glasses');
-  assert.match(src, /evaluateRiskGuard/, 'Must include fat-finger & high-risk "ARE YOU SURE?" guardrail');
+  assert.match(src, /evaluateRiskGuard/, 'Must include fat-finger & balance-% risk guardrail');
+  assert.match(src, /Risking \$\{guard\.riskPct\}% of balance/, 'Must show exact % of balance in Are You Sure confirmation');
+  assert.match(src, /TIMEFRAMES/, 'Must include multi-timeframe chart specs (1m..1d) with adaptive SL/TP step');
   assert.match(src, /Close \$\{sym\} 100%/, 'Must explicitly name the coin being closed (Close <SYM> 100%)');
   assert.match(src, /lockedSymbol/, 'Must lock active coin context so unrelated open positions never hijack feed messages');
+});
+
+test('Hyperliquid supports all 8 timeframes (1m, 3m, 5m, 15m, 1h, 2h, 4h, 1d/daily)', () => {
+  assert.deepEqual(SUPPORTED_INTERVALS, ['1m', '3m', '5m', '15m', '1h', '2h', '4h', '1d']);
+  assert.equal(normalizeInterval('daily'), '1d');
+  assert.equal(normalizeInterval('1m'), '1m');
+  assert.equal(normalizeInterval('4h'), '4h');
+  assert.equal(normalizeInterval('invalid'), '15m');
 });
 
 test('Fat-finger guard ($12,500 slip on $10,000 balance) & idempotent retry safety on dropped connections', () => {

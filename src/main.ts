@@ -13,6 +13,7 @@ import { connectEvenBridge, type GlassesHost } from './bridge';
 import { drawG2Preview } from './preview';
 import {
   RISK_NUMPAD,
+  TIMEFRAMES,
   computeRiskTicket,
   createInitialUIState,
   evaluateRiskGuard,
@@ -20,6 +21,7 @@ import {
   getActiveFeedMessage,
   getActiveMarket,
   getActivePosition,
+  getActiveTimeframe,
   getActiveTriggeredAlert,
   getAlertActions,
   getManageActions,
@@ -101,21 +103,25 @@ function updateStatusBar(): void {
   const tg = ui.data.telegram;
   const port = ui.data.portfolio;
   const openSyms = port.positions.map((p) => p.symbol).join(', ');
+  const tf = getActiveTimeframe(ui);
   statusEl.innerHTML =
     `<strong>Telegram:</strong> @${tg.botUsername || 'sezirneonbot'} ` +
     `(${tg.activeChatId ? tg.activeChatTitle || tg.activeChatId : 'waiting'}) · ` +
-    `<strong>Hyperliquid:</strong> ${ui.data.markets.length} perps · ` +
+    `<strong>Hyperliquid:</strong> ${ui.data.markets.length} perps (${tf.label}) · ` +
     `<strong>Paper:</strong> $${port.cashUsd.toFixed(0)} (${port.totalPnlUsd >= 0 ? '+' : ''}$${port.totalPnlUsd.toFixed(2)}) · ` +
     `<strong>Open:</strong> ${openSyms || 'none'} · ` +
     `<strong>Risk:</strong> $${ui.riskUsd}`;
 }
 
-async function ensureActiveCandles(): Promise<void> {
+async function ensureActiveCandles(force = false): Promise<void> {
   const mkt = getActiveMarket(ui);
   if (!mkt) return;
-  if (ui.candles && ui.candles.symbol === mkt.symbol && ui.candles.bars.length >= 2) return;
+  const tf = getActiveTimeframe(ui);
+  if (!force && ui.candles && ui.candles.symbol === mkt.symbol && ui.candles.interval === tf.id && ui.candles.bars.length >= 2) {
+    return;
+  }
   try {
-    ui.candles = await fetchCandles(mkt.symbol, '15m');
+    ui.candles = await fetchCandles(mkt.symbol, tf.id);
   } catch {
     // Non-fatal
   }
@@ -131,7 +137,8 @@ async function paint(forceRebuild = false): Promise<void> {
 async function syncState(refresh = false): Promise<void> {
   try {
     const prevDefaultRisk = ui.data?.portfolio.defaultRiskUsd;
-    ui.data = await fetchBackendState(refresh);
+    const tf = getActiveTimeframe(ui);
+    ui.data = await fetchBackendState(refresh, tf.id);
     ui.offline = false;
 
     // Sync /risk <amount> changes made in Telegram live into active ticket
@@ -249,9 +256,22 @@ async function executeAction(action: HudAction): Promise<void> {
       return;
     }
 
+    if (action.kind === 'GO_TIMEFRAME') {
+      ui.lockedSymbol = action.payload || getActiveMarket(ui)?.symbol || ui.lockedSymbol || 'ETH';
+      ui.returnAfterTf = ui.view;
+      ui.view = 'TIMEFRAME';
+      await ensureActiveCandles();
+      await paint(true);
+      return;
+    }
+
     if (action.kind === 'START_SHORT' || action.kind === 'START_LONG') {
+      const tf = getActiveTimeframe(ui);
       ui.ticketSide = action.kind === 'START_SHORT' ? 'SHORT' : 'LONG';
       ui.lockedSymbol = action.payload || getActiveMarket(ui)?.symbol || ui.lockedSymbol || 'ETH';
+      ui.ticketSlPct = tf.defaultSlPct;
+      ui.ticketTpPct = tf.defaultTpPct;
+      ui.confirmArmed = false;
       ui.view = 'TICKET_SL';
       await ensureActiveCandles();
       await paint(true);
@@ -362,20 +382,46 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 1/3: Slide Stop Loss directly on 15m candlesticks (Structure First!)
+  // INLINE CHART TIMEFRAME PICKER (1m · 3m · 5m · 15m · 1h · 2h · 4h · 1D)
+  if (ui.view === 'TIMEFRAME') {
+    if (g === 'SWIPE_DOWN' || g === 'SWIPE_UP') {
+      const dir = g === 'SWIPE_DOWN' ? 1 : -1;
+      ui.timeframeIndex = (ui.timeframeIndex + dir + TIMEFRAMES.length) % TIMEFRAMES.length;
+      const tf = getActiveTimeframe(ui);
+      ui.ticketSlPct = tf.defaultSlPct;
+      ui.ticketTpPct = tf.defaultTpPct;
+      log(`Chart timeframe -> ${tf.label} (SL step ±${tf.slStepPct}%, TP step ±${tf.tpStepPct}%)`);
+      await paint(false); // Instant text highlight before candle fetch lands
+      await ensureActiveCandles(true);
+      await paint(false);
+      return;
+    }
+    if (g === 'TAP' || g === 'DOUBLE_TAP') {
+      const tf = getActiveTimeframe(ui);
+      ui.toast = `TF ${tf.label}`;
+      ui.view = ui.returnAfterTf || 'REPLY';
+      if (ui.view === 'GLANCE') ui.lockedSymbol = null;
+      await paint(true);
+      return;
+    }
+    return;
+  }
+
+  // STEP 1/3: Slide Stop Loss directly on live candlesticks (Timeframe-Adaptive Sensitivity!)
   if (ui.view === 'TICKET_SL') {
-    const step = 0.25;
+    const tf = getActiveTimeframe(ui);
+    const step = tf.slStepPct;
     if (g === 'SWIPE_UP') {
       ui.ticketSlPct =
         ui.ticketSide === 'SHORT'
-          ? Math.min(12, Number((ui.ticketSlPct + step).toFixed(2)))
-          : Math.max(0.25, Number((ui.ticketSlPct - step).toFixed(2)));
+          ? Math.min(tf.maxSlPct, Number((ui.ticketSlPct + step).toFixed(2)))
+          : Math.max(tf.minSlPct, Number((ui.ticketSlPct - step).toFixed(2)));
       await paint(false);
     } else if (g === 'SWIPE_DOWN') {
       ui.ticketSlPct =
         ui.ticketSide === 'SHORT'
-          ? Math.max(0.25, Number((ui.ticketSlPct - step).toFixed(2)))
-          : Math.min(12, Number((ui.ticketSlPct + step).toFixed(2)));
+          ? Math.max(tf.minSlPct, Number((ui.ticketSlPct - step).toFixed(2)))
+          : Math.min(tf.maxSlPct, Number((ui.ticketSlPct + step).toFixed(2)));
       await paint(false);
     } else if (g === 'TAP') {
       ui.view = 'TICKET_TP';
@@ -388,20 +434,21 @@ async function handleGesture(g: Gesture): Promise<void> {
     return;
   }
 
-  // STEP 2/3: Slide Take Profit directly on 15m candlesticks (Locks Setup R:R!)
+  // STEP 2/3: Slide Take Profit directly on live candlesticks (Timeframe-Adaptive Sensitivity!)
   if (ui.view === 'TICKET_TP') {
-    const step = 0.35;
+    const tf = getActiveTimeframe(ui);
+    const step = tf.tpStepPct;
     if (g === 'SWIPE_UP') {
       ui.ticketTpPct =
         ui.ticketSide === 'SHORT'
-          ? Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)))
-          : Math.min(25, Number((ui.ticketTpPct + step).toFixed(2)));
+          ? Math.max(tf.minTpPct, Number((ui.ticketTpPct - step).toFixed(2)))
+          : Math.min(tf.maxTpPct, Number((ui.ticketTpPct + step).toFixed(2)));
       await paint(false);
     } else if (g === 'SWIPE_DOWN') {
       ui.ticketTpPct =
         ui.ticketSide === 'SHORT'
-          ? Math.min(25, Number((ui.ticketTpPct + step).toFixed(2)))
-          : Math.max(0.35, Number((ui.ticketTpPct - step).toFixed(2)));
+          ? Math.min(tf.maxTpPct, Number((ui.ticketTpPct + step).toFixed(2)))
+          : Math.max(tf.minTpPct, Number((ui.ticketTpPct - step).toFixed(2)));
       await paint(false);
     } else if (g === 'TAP') {
       ui.riskDraft = '';
@@ -512,10 +559,10 @@ async function handleGesture(g: Gesture): Promise<void> {
         return;
       }
 
-      // Tier 2: High risk (>5% equity) requires explicit second "ARE YOU SURE?" tap
-      if (guard.level === 'WARN' && !ui.confirmArmed) {
+      // Tier 2: Mandatory "Are you sure?" gate on EVERY trade showing exact % of balance risked
+      if (!ui.confirmArmed) {
         ui.confirmArmed = true;
-        log(`High-risk gate armed: $${calc.riskUsd} (${guard.riskPct}% equity) — tap again to confirm`);
+        log(`Are you sure? Risking $${calc.riskUsd} (${guard.riskPct}% of balance) — tap again to confirm`);
         await paint(false);
         return;
       }
@@ -609,8 +656,9 @@ async function boot(): Promise<void> {
     } else if (id === 3) {
       ui.view = 'MANAGE';
     } else if (id === 4) {
-      ui.ticketSide = ui.ticketSide === 'SHORT' ? 'LONG' : 'SHORT';
-      log(`Flipped direction -> ${ui.ticketSide}`);
+      ui.lockedSymbol = getActiveMarket(ui)?.symbol || ui.lockedSymbol || 'ETH';
+      ui.returnAfterTf = ui.view === 'TIMEFRAME' ? 'GLANCE' : ui.view;
+      ui.view = 'TIMEFRAME';
     }
     void ensureActiveCandles().then(() => paint(true));
   });

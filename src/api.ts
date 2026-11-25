@@ -125,8 +125,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export async function fetchBackendState(refresh = false): Promise<BackendState> {
-  return requestJson<BackendState>(`/api/state${refresh ? '?refresh=1' : ''}`);
+export async function fetchBackendState(refresh = false, interval = '15m'): Promise<BackendState> {
+  const q = new URLSearchParams();
+  if (refresh) q.set('refresh', '1');
+  if (interval) q.set('interval', interval);
+  return requestJson<BackendState>(`/api/state?${q.toString()}`);
 }
 
 export async function fetchCandles(symbol: string, interval = '15m'): Promise<CandleSeries> {

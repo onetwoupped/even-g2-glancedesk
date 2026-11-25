@@ -54,7 +54,7 @@ function buildContextMenu(): MenuContainerProperty {
       new MenuItemProperty({ itemID: 1, itemName: 'Glance' }),
       new MenuItemProperty({ itemID: 2, itemName: 'New Trade (SL/TP)' }),
       new MenuItemProperty({ itemID: 3, itemName: 'Open Positions' }),
-      new MenuItemProperty({ itemID: 4, itemName: 'Flip LONG/SHORT' }),
+      new MenuItemProperty({ itemID: 4, itemName: 'Chart Timeframe' }),
     ],
   });
 }
@@ -160,7 +160,7 @@ export async function connectEvenBridge(
     for (const img of page.imageObject) {
       if (!img.chart || img.chart.bars.length < 2) continue;
       const lvlKey = (img.chart.levels || []).map((l) => `${l.label}:${l.price.toFixed(4)}:${l.emphasized ? 1 : 0}`).join('|');
-      const key = `${img.chart.symbol}:${img.chart.bars.slice(-1)[0].c}:${lvlKey}`;
+      const key = `${img.chart.symbol}:${img.chart.interval}:${img.chart.bars.slice(-1)[0].c}:${lvlKey}`;
       if (!force && key === lastChartKey) continue;
       imageSending = true;
       try {

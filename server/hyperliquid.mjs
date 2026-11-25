@@ -1,5 +1,24 @@
 const HL_INFO_URL = 'https://api.hyperliquid.xyz/info';
 
+export const INTERVAL_MS = {
+  '1m': 60 * 1000,
+  '3m': 3 * 60 * 1000,
+  '5m': 5 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '2h': 2 * 60 * 60 * 1000,
+  '4h': 4 * 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+};
+
+export const SUPPORTED_INTERVALS = Object.keys(INTERVAL_MS);
+
+export function normalizeInterval(interval) {
+  const raw = String(interval || '15m').toLowerCase().trim();
+  if (raw === 'daily' || raw === 'd') return '1d';
+  return Object.prototype.hasOwnProperty.call(INTERVAL_MS, raw) ? raw : '15m';
+}
+
 const TICKER_ALIASES = {
   bitcoin: 'BTC',
   btc: 'BTC',
@@ -125,22 +144,21 @@ export class HyperliquidClient {
 
   /**
    * Fetch live OHLC candlestick bars (open, high, low, close, timestamp) from Hyperliquid.
+   * Supports 1m, 3m, 5m, 15m, 1h, 2h, 4h, 1d (daily) with calibrated 26-bar lookback.
    */
-  async getStructureCandles(symbol, interval = '15m') {
+  async getStructureCandles(symbol, rawInterval = '15m') {
     const coin = String(symbol || 'BTC').replace(/-PERP$/i, '').toUpperCase();
+    const interval = normalizeInterval(rawInterval);
     const cacheKey = `${coin}:${interval}`;
     const now = Date.now();
+    const ttlMs = interval === '1m' || interval === '3m' ? 10000 : interval === '5m' || interval === '15m' ? 25000 : 60000;
     const existing = this.candleCache.get(cacheKey);
-    if (existing && now - existing.fetchedAt < 30000) {
+    if (existing && now - existing.fetchedAt < ttlMs) {
       return existing;
     }
 
-    const lookbackMs =
-      interval === '5m'
-        ? 2.5 * 60 * 60 * 1000
-        : interval === '15m'
-          ? 7 * 60 * 60 * 1000
-          : 24 * 60 * 60 * 1000;
+    const barMs = INTERVAL_MS[interval] || INTERVAL_MS['15m'];
+    const lookbackMs = barMs * 26;
 
     try {
       const resp = await fetch(HL_INFO_URL, {

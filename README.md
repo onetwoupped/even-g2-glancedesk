@@ -14,22 +14,22 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 
 ---
 
-## Real Trader Workflow on Even G2 (Structure First -> Exact Dollar Risk -> Execute)
-1. **True OHLC Candlesticks on 4-Bit Monochrome Glass:** Bullish bars render as crisp hollow bright outlines with wicks; bearish bars render as solid filled bodies with wicks — floating borderlessly over transparent black glass (`borderWidth: 0`).
-2. **3-Step Structure-First Ticket (`SL` -> `TP` -> Exact `$` Risk & Execute):**
+## Real Trader Workflow on Even G2 (Multi-TF Candles -> SL/TP -> 2D Numpad -> Are You Sure?)
+1. **Multi-Timeframe OHLC Candlesticks (`1m · 3m · 5m · 15m · 1h · 2h · 4h · 1D`):** Bullish bars render as hollow bright outlines with wicks; bearish bars render as solid filled bodies floating borderlessly over transparent black glass (`borderWidth: 0`). Switch timeframes inline via `Swipe Up/Down` (`Chart TF: 15m` or G2 Menu) — **SL/TP swipe precision automatically scales to the active timeframe** (fine `±0.05%` scalp steps on `1m` up to `±1.25%` swing steps on `1D`).
+2. **Structure-First Ticket (`SL` -> `TP` -> 2D Numpad -> Mandatory `Are You Sure?`):**
    - Pick `Short <COIN>` or `Long <COIN>` directly from the active coin's Telegram feed context (coin-locked so an open ETH trade never hijacks a BTC alert).
-   - **Step 1/3 (`Place Stop Loss`):** Swipe up/down to place **`SL` directly on the 15m candle structure**.
+   - **Step 1/3 (`Place Stop Loss`):** Swipe up/down to place **`SL` directly on the live candle structure** (step sensitivity adapts to `1m..1D`).
    - **Step 2/3 (`Place Take Profit`):** Swipe up/down to place **`TP` on the candles** and see the setup's **`R:R` (`2.51R`)**.
-   - **Step 3/3 (`On-Glasses 2D Looping Numpad` -> `Review & Execute`):** Enter **any exact dollar risk of any length** (`$35`, `$253`, `$12,500`) directly on the glasses using a 2D looping keypad (`1–9 / < 0 OK`): **`Swipe Down`** moves down a row (wraps), **`Swipe Up`** moves right a column (wraps), **`Tap`** picks the digit, and **`Double Tap`** (or `OK`) locks the amount and opens the exact Risk/Gain/Size review screen. Single tap executes and logs the receipt to Telegram.
+   - **Step 3/3 (`On-Glasses 2D Looping Numpad`):** Enter **any exact dollar risk of any length** (`$35`, `$203`, `$850`) directly on the glasses (`Swipe Down` = next row, `Swipe Up` = next col, `Tap` = pick digit, `Double Tap` = confirm). Position size (`qty = risk / |entry - SL|`) and target gain auto-calculate live.
+   - **Review -> Mandatory `Are You Sure?` Confirmation:** Every trade shows exact risk, reward, auto-sized qty, and **`Risking X.X% of balance`** before asking **`Tap AGAIN to confirm`** (fat-finger typos exceeding balance like `$12,500` on `$10,000` are hard-blocked on-lens and server-side).
 3. **Explicit Per-Coin Position Management (+1.5R Break-Even & 50% Partial):** Every action names its coin explicitly (`Move ETH SL to BE`, `Take 50% ETH`, `Close ETH 100%`, `Switch to BTC`) so managing multiple open positions is unambiguous.
 
 ---
 
 ## Real-Life Edge Cases, Resilience & Path to Live Accounts
-- **3-Tier Fat-Finger Guard (`$12,500` vs `$125` slip protection):**
-  - `<= 5%` of account equity -> fast 1-tap execution on the Confirm screen (zero extra friction).
-  - `> 5%` of account equity -> triggers an explicit second **`! ARE YOU SURE? (X% equity)`** confirmation gate before sending.
-  - Exceeding available balance or required isolated margin (e.g., accidentally typing `$12,500` on a `$10,000` account) -> **hard-blocked on-lens** and rejected server-side before an order can fire.
+- **Mandatory Two-Step Trade Confirmation + Balance Hard-Block (`$12,500` vs `$125`):**
+  - Every valid trade displays **`Risking X.X% of balance — Are you sure?`** after `Tap to execute` and requires a second confirming tap (with a `! HIGH RISK` callout above `5%` of balance).
+  - Typos exceeding available balance or required isolated margin (e.g. `$12,500` on a `$10,000` account) are **hard-blocked on-lens** and rejected server-side before an order can fire.
 - **Connection Drops Mid-Stop Move (BLE / Network Resilience):**
   - Every order, Break-Even move, partial close, and full close carries a client-generated **`idempotencyKey`**.
   - If connectivity drops mid-`Move SL to BE`, GlanceDesk **never pretends it succeeded**: the eyebrow immediately displays `retrying <COIN> BE` and automatically replays the exact idempotent request every 3 seconds until the server confirms — zero silent stop failures, zero duplicate executions.
@@ -57,7 +57,7 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
 ```bash
 npm install
 cp .env.example .env   # Paste your TELEGRAM_BOT_TOKEN
-npm test               # Runs 10 unit, safety-guard & official SDK validation tests
+npm test               # Runs 11 unit, multi-TF, safety-guard & official SDK validation tests
 npm run server         # Terminal 1 — Backend proxy (:8787)
 npm run dev            # Terminal 2 — Glasses WebView (:5173)
 npm run sim            # Terminal 3 — Official Even Hub G2 Simulator

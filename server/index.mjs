@@ -233,7 +233,8 @@ const server = http.createServer(async (req, res) => {
         portfolio.positions[0]?.symbol ||
         feed[0]?.linkedMarket?.symbol ||
         'ETH';
-      const candles = await hyperliquid.getStructureCandles(prioritySymbol, '15m');
+      const reqInterval = urlObj.searchParams.get('interval') || '15m';
+      const candles = await hyperliquid.getStructureCandles(prioritySymbol, reqInterval);
 
       return sendJson(res, 200, {
         ok: true,
