@@ -21,15 +21,15 @@ Built for **Heads Up: Even Realities Hackathon (Nov 23 – Nov 29, 2026)**.
    - **Step 1/3 (`Place Stop Loss`):** Swipe up/down to place **`SL` directly on the live candle structure** (step sensitivity adapts to `1m..1D`).
    - **Step 2/3 (`Place Take Profit`):** Swipe up/down to place **`TP` on the candles** and see the setup's **`R:R` (`2.51R`)**.
    - **Step 3/3 (`On-Glasses 2D Looping Numpad`):** Enter **any exact dollar risk of any length** (`$35`, `$203`, `$850`) directly on the glasses (`Swipe Down` = next row, `Swipe Up` = next col, `Tap` = pick digit, `Double Tap` = confirm). Position size (`qty = risk / |entry - SL|`) and target gain auto-calculate live.
-   - **Review -> Mandatory `Are You Sure?` Confirmation:** Every trade shows exact risk, reward, auto-sized qty, and **`Risking X.X% of balance`** before asking **`Tap AGAIN to confirm`** (fat-finger typos exceeding balance like `$12,500` on `$10,000` are hard-blocked on-lens and server-side).
+   - **Review -> Mandatory `Are You Sure?` Confirmation:** Every trade shows exact risk, reward, auto-sized qty, and **`Risking X.X% of balance`** before asking **`Tap AGAIN to confirm`** (with `! HIGH RISK` callout above `5%`). Orders are only blocked when physically impossible (risk or required margin exceeds available balance, e.g., `$12,500` on `$10,000`).
 3. **Explicit Per-Coin Position Management (+1.5R Break-Even & 50% Partial):** Every action names its coin explicitly (`Move ETH SL to BE`, `Take 50% ETH`, `Close ETH 100%`, `Switch to BTC`) so managing multiple open positions is unambiguous.
 
 ---
 
 ## Real-Life Edge Cases, Resilience & Path to Live Accounts
-- **Mandatory Two-Step Trade Confirmation + Per-Trade Account Cap (`$12,500` vs `$125`):**
-  - Every valid trade displays **`Risking X.X% of balance — Are you sure?`** after `Tap to execute` and requires a second confirming tap (with a `! HIGH RISK` callout above `5%` of balance).
-  - Hard-blocks BOTH typos exceeding available balance (`$12,500` on `$10,000`) AND oversized bets exceeding your configurable per-trade account cap (`maxRiskPct`, default `10%`, adjustable via `/maxrisk 5` in Telegram) — enforced on-lens and server-side.
+- **Mandatory Two-Step Trade Confirmation + Balance Check (`$12,500` vs `$125`):**
+  - Every valid trade (up to `100%` of balance — no paternalistic artificial risk caps) displays **`Risking X.X% of balance — Are you sure?`** after `Tap to execute` and requires a second confirming tap, with a `! HIGH RISK` highlight above `5%` so a typo stands out immediately.
+  - Physically impossible slips exceeding available balance or required isolated margin (e.g., `$12,500` on a `$10,000` balance) are rejected both on-lens (`! insufficient balance`) and server-side.
 - **Asymmetric Offline Resilience (BLE / Network Drops):**
   - **Protective actions (`Move SL to BE`, `Take 50%`, `Close 100%`):** Carry an `idempotencyKey`. If connectivity drops mid-stop move, GlanceDesk **never pretends it succeeded**: the eyebrow immediately displays `retrying <COIN> BE` across every view and replays the exact idempotent request every 3 seconds until confirmed — zero silent failures, zero duplicate executions.
   - **New risk-increasing entries:** Fail fast with `OFFLINE · order NOT sent` so a stale entry never fills minutes later at an unintended price.

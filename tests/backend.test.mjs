@@ -278,7 +278,7 @@ test('Fat-finger guard ($12,500 slip on $10,000 balance) & idempotent retry safe
   try {
     const ledger = new PaperLedger(file);
 
-    // 1. Fat-finger slip: $12,500 instead of $125 on a $10,000 account -> hard blocked
+    // 1. Balance overflow: $12,500 on a $10,000 balance is physically impossible -> blocked
     assert.throws(() => {
       ledger.placePaperOrder({
         marketId: 'ETH-PERP',
@@ -290,38 +290,22 @@ test('Fat-finger guard ($12,500 slip on $10,000 balance) & idempotent retry safe
         takeProfit: 2060,
         idempotencyKey: 'ord_slip_1',
       });
-    }, /Fat-finger guard/);
+    }, /Insufficient balance/);
     assert.equal(ledger.snapshot([]).openCount, 0);
 
-    // 1b. Account risk cap: $2,500 (25% of $10,000) exceeds default 10% maxRiskPct -> hard blocked
-    assert.throws(() => {
-      ledger.placePaperOrder({
-        marketId: 'ETH-PERP',
-        symbol: 'ETH',
-        side: 'LONG',
-        riskUsd: 2500,
-        price: 2000,
-        stopLoss: 1980,
-        takeProfit: 2060,
-        idempotencyKey: 'ord_cap_1',
-      });
-    }, /Account risk cap/);
-
-    // Customizing maxRiskPct to 5% lowers the cap dynamically to $500
-    assert.equal(ledger.setMaxRiskPct(5).maxRiskPct, 5);
-    assert.throws(() => {
-      ledger.placePaperOrder({
-        marketId: 'ETH-PERP',
-        symbol: 'ETH',
-        side: 'LONG',
-        riskUsd: 600,
-        price: 2000,
-        stopLoss: 1980,
-        takeProfit: 2060,
-        idempotencyKey: 'ord_cap_2',
-      });
-    }, /Account risk cap/);
-    ledger.setMaxRiskPct(10);
+    // 1b. No artificial cap: trader can intentionally risk 25% ($2,500 on $10,000) if confirmed
+    const bigTrade = ledger.placePaperOrder({
+      marketId: 'ETH-PERP',
+      symbol: 'ETH',
+      side: 'LONG',
+      riskUsd: 2500,
+      price: 2000,
+      stopLoss: 1800, // 10% SL => 12.5 ETH ($25k notional, $2,500 margin fits in $10k)
+      takeProfit: 2400,
+      idempotencyKey: 'ord_big_ok',
+    });
+    assert.equal(bigTrade.riskUsd, 2500);
+    ledger.closePosition(bigTrade.id, 2000, 'MANUAL', 'close_big_ok');
 
     // 2. Idempotent order retry (BLE/network drop replay with same idempotencyKey never double-opens)
     const first = ledger.placePaperOrder({

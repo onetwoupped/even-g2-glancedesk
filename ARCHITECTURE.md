@@ -12,9 +12,9 @@
 4. **STRUCTURE-FIRST TICKET (`TICKET_SL` -> `TICKET_TP` -> `TICKET_RISK` -> `TICKET_CONFIRM`):**
    - Place **Stop Loss** and **Take Profit** directly over live candlesticks.
    - Enter any exact dollar risk of arbitrary length on the **2D Looping Numpad** (`Swipe Down` = next row, `Swipe Up` = next col, `Tap` = pick digit, `Double Tap` = review). Coin quantity auto-solves `qty = riskUsd / |entry - SL|`.
-   - **Fat-Finger & Account Risk Guardrail (`evaluateRiskGuard` + Server `PaperLedger`):**
-     - Hard-blocks risks exceeding available cash (e.g., `$12,500` slip on `$10,000`) OR exceeding the configurable per-trade account cap (`maxRiskPct`, default `10%`, set via `/maxrisk <pct>`).
-     - Requires a mandatory second **`Are you sure? · Risking X.X% of balance`** confirmation tap on **every** trade.
+   - **Balance Check & Mandatory Confirmation (`evaluateRiskGuard` + Server `PaperLedger`):**
+     - Blocks ONLY physically impossible orders where risk or required margin exceeds available balance (e.g., `$12,500` slip on a `$10,000` balance).
+     - Never artificially caps valid trades: requires a mandatory second **`Are you sure? · Risking X.X% of balance`** confirmation tap on **every** trade (with `! HIGH RISK` emphasis above `5%`).
 5. **MANAGE (Per-Coin Position Control):** Explicit coin-scoped actions (`Move <COIN> SL to BE`, `Take 50% <COIN>`, `Close <COIN> 100%`, `Switch to <NEXT>`) with automatic Telegram execution receipts.
 
 ---
@@ -28,7 +28,7 @@
 ## 3. Safe Transition From Paper to Live Hyperliquid Accounts
 1. **Hyperliquid API Agent Wallet (Trade-Only):** Sub-key authorized strictly for order placement/modification with **zero withdrawal permission**.
 2. **Exchange-Native Reduce-Only SL/TP Orders:** Submitted to Hyperliquid's matching engine atomically with entry so protective stops execute on-chain even if glasses, phone, and internet all disconnect simultaneously.
-3. **Hard Server/Wallet Risk Caps & Biometric Escalation:** Per-trade `maxRiskPct`, daily drawdown circuit breaker, and phone FaceID/fingerprint sign-off above a user-configured dollar threshold.
+3. **Optional User-Configured Risk Caps & Biometric Escalation:** User-opt-in daily drawdown circuit breaker and phone FaceID/fingerprint sign-off above a user-chosen dollar threshold.
 
 ---
 

@@ -80,7 +80,6 @@ export interface PortfolioSnapshot {
   realizedPnlUsd: number;
   totalPnlUsd: number;
   defaultRiskUsd: number;
-  maxRiskPct: number;
   openCount: number;
   positions: PaperPosition[];
   alerts: PriceAlert[];

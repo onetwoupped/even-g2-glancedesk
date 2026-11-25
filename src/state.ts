@@ -129,19 +129,18 @@ export interface RiskGuardResult {
 }
 
 /**
- * Fat-finger & Account-Size Risk Guardrail:
- * - Catches numpad slips like $12,500 instead of $125 OR oversized risks above maxRiskPct (default 10%).
- * - BLOCKED: risk exceeds balance, margin exceeds cash, OR risk % exceeds account maxRiskPct cap.
- * - WARN: risk > 5% of balance (still allowed up to maxRiskPct, highlighted with ! HIGH RISK).
- * - OK: <= 5% balance (still requires mandatory "Are you sure? Risking X% of balance" second tap).
+ * Balance Feasibility & Risk Percentage Check:
+ * - BLOCKED ONLY when physically impossible (risk or required isolated margin exceeds available balance,
+ *   e.g. slipping $12,500 on a $10,000 balance).
+ * - Never artificially caps a trader who intentionally wants to risk up to 100% of their balance —
+ *   every valid trade shows exact "Risking X.X% of balance — Are you sure?" before execution.
  */
 export function evaluateRiskGuard(
   calc: { riskUsd: number; notionalUsd: number },
-  portfolio: { cashUsd: number; equityUsd: number; maxRiskPct?: number } | null | undefined
+  portfolio: { cashUsd: number; equityUsd: number } | null | undefined
 ): RiskGuardResult {
   const cash = portfolio?.cashUsd ?? 10000;
   const equity = Math.max(1, portfolio?.equityUsd ?? cash);
-  const maxRiskPct = portfolio?.maxRiskPct ?? 10;
   const riskPct = Number(((calc.riskUsd / equity) * 100).toFixed(1));
   const marginUsd = Number(Math.max(calc.riskUsd, calc.notionalUsd / 50).toFixed(2));
 
@@ -150,16 +149,7 @@ export function evaluateRiskGuard(
       level: 'BLOCKED',
       riskPct,
       marginUsd,
-      reason: `Exceeds cash ($${cash.toFixed(0)})`,
-    };
-  }
-  if (riskPct > maxRiskPct) {
-    const capUsd = ((equity * maxRiskPct) / 100).toFixed(0);
-    return {
-      level: 'BLOCKED',
-      riskPct,
-      marginUsd,
-      reason: `Over ${maxRiskPct}% cap (max $${capUsd})`,
+      reason: `Exceeds balance ($${cash.toFixed(0)})`,
     };
   }
   if (marginUsd > cash) {
@@ -629,12 +619,12 @@ export function renderPage(st: AppUIState): G2PageSpec {
     if (guard.level === 'BLOCKED') {
       return buildMinimalHudPage({
         view: 'TICKET_CONFIRM',
-        eyebrow: `! blocked · fat-finger guard`,
+        eyebrow: `! insufficient balance`,
         main: [
           `! Risk -$${calc.riskUsd} (${guard.riskPct}% bal)`,
           `${guard.reason}`,
           `Size  ${formatQty(calc.qty)} ${mkt?.symbol || ''} (${formatNotional(calc.notionalUsd)})`,
-          `Execution blocked`,
+          `Cannot exceed balance`,
           `› Double-tap to edit $ risk`,
         ].join('\n'),
         hint: 'dbl edit $ risk · swipe edit TP',

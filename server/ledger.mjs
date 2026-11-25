@@ -13,7 +13,6 @@ export class PaperLedger {
       cashUsd: INITIAL_BALANCE_USD,
       realizedPnlUsd: 0,
       defaultRiskUsd: 100, // 1R dollar risk budget (user sets any exact $ via /risk or companion)
-      maxRiskPct: 10, // Hard per-trade account risk cap (% of equity, configurable via /maxrisk)
       positions: [],
       closed: [],
       alerts: [],
@@ -34,7 +33,6 @@ export class PaperLedger {
           cashUsd: raw.cashUsd,
           realizedPnlUsd: Number(raw.realizedPnlUsd ?? 0),
           defaultRiskUsd: Number(raw.defaultRiskUsd ?? 100),
-          maxRiskPct: Number(raw.maxRiskPct ?? 10),
           positions: raw.positions,
           closed: Array.isArray(raw.closed) ? raw.closed : [],
           alerts: Array.isArray(raw.alerts) ? raw.alerts : [],
@@ -61,7 +59,6 @@ export class PaperLedger {
       cashUsd: INITIAL_BALANCE_USD,
       realizedPnlUsd: 0,
       defaultRiskUsd: 100,
-      maxRiskPct: 10,
       positions: [],
       closed: [],
       alerts: [],
@@ -79,17 +76,7 @@ export class PaperLedger {
     }
     this.state.defaultRiskUsd = Number(r.toFixed(2));
     this.save();
-    return { defaultRiskUsd: this.state.defaultRiskUsd, maxRiskPct: this.state.maxRiskPct };
-  }
-
-  setMaxRiskPct(pct) {
-    const p = Number(pct);
-    if (!Number.isFinite(p) || p < 0.5 || p > 50) {
-      throw new Error('Max risk cap must be between 0.5% and 50% of balance');
-    }
-    this.state.maxRiskPct = Number(p.toFixed(1));
-    this.save();
-    return { defaultRiskUsd: this.state.defaultRiskUsd, maxRiskPct: this.state.maxRiskPct };
+    return { defaultRiskUsd: this.state.defaultRiskUsd };
   }
 
   _rememberKey(key, result) {
@@ -138,12 +125,7 @@ export class PaperLedger {
       throw new Error('Risk amount must be at least $1');
     }
     if (risk > this.state.cashUsd) {
-      throw new Error(`Fat-finger guard: risk $${risk.toFixed(0)} exceeds available balance ($${this.state.cashUsd.toFixed(0)})`);
-    }
-    const maxCapPct = Number(this.state.maxRiskPct ?? 10);
-    const maxAllowedRisk = Number(((this.state.cashUsd * maxCapPct) / 100).toFixed(2));
-    if (risk > maxAllowedRisk) {
-      throw new Error(`Account risk cap: $${risk.toFixed(0)} exceeds ${maxCapPct}% max per trade ($${maxAllowedRisk.toFixed(0)})`);
+      throw new Error(`Insufficient balance: risk $${risk.toFixed(0)} exceeds available balance ($${this.state.cashUsd.toFixed(0)})`);
     }
 
     const slPx = Number(stopLoss);
@@ -407,7 +389,6 @@ export class PaperLedger {
       realizedPnlUsd: this.state.realizedPnlUsd,
       totalPnlUsd,
       defaultRiskUsd: this.state.defaultRiskUsd,
-      maxRiskPct: Number(this.state.maxRiskPct ?? 10),
       openCount: positions.length,
       positions,
       alerts: this.state.alerts.filter((a) => !a.triggered),

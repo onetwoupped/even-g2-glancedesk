@@ -94,13 +94,6 @@ async function processTelegramCommands(messages, markets) {
           msg.chatId,
           msg.messageId
         );
-      } else if (cmd === '/maxrisk' && parts[1]) {
-        const res = ledger.setMaxRiskPct(Number(parts[1].replace(/%$/, '')));
-        await notifyTg(
-          `Max risk cap per trade set to ${res.maxRiskPct}% of balance (hard-blocks oversized orders).`,
-          msg.chatId,
-          msg.messageId
-        );
       } else if (cmd === '/price' && parts[1]) {
         const sym = parts[1].replace(/^\$/, '').toUpperCase();
         const m = markets.find((x) => x.symbol.toUpperCase() === sym);
@@ -159,7 +152,7 @@ async function processTelegramCommands(messages, markets) {
         }
       } else if (cmd === '/help' || cmd === '/start') {
         await notifyTg(
-          'Commands:\n/risk 242 — default $ risk\n/maxrisk 10 — max % balance cap\n/alert NEAR 4.20 structure\n/be · /half · /close · /pnl · /price NEAR',
+          'Commands:\n/risk 242 — default $ risk\n/alert NEAR 4.20 structure\n/be · /half · /close · /pnl · /price NEAR',
           msg.chatId,
           msg.messageId
         );
@@ -269,12 +262,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/prefs') {
       const body = await readJsonBody(req);
-      let prefs = {
-        defaultRiskUsd: ledger.state.defaultRiskUsd,
-        maxRiskPct: ledger.state.maxRiskPct,
-      };
-      if (body.riskUsd !== undefined) prefs = ledger.setRiskBudget(body.riskUsd);
-      if (body.maxRiskPct !== undefined) prefs = ledger.setMaxRiskPct(body.maxRiskPct);
+      const prefs = ledger.setRiskBudget(body.riskUsd);
       const hlState = await hyperliquid.getMarkets();
       return sendJson(res, 200, { ok: true, prefs, portfolio: ledger.snapshot(hlState.markets) });
     }

@@ -6,7 +6,7 @@
   - Pick `Long ETH` -> **1/3 Stop Loss**: slide `SL` directly onto the candle wick -> `Tap`.
   - **2/3 Take Profit**: slide `TP` to lock `R:R` -> `Tap`.
   - **3/3 Enter `$` Risk (2D Looping Numpad)**: `Down` = next row (wraps), `Up` = next col (wraps), `Tap` = pick digits (e.g. `$203`), **`Double Tap`** -> Review screen.
-  - *(Optional 5s safety clip)* Show typing `$12,500` gets hard-blocked (`! BLOCKED · Exceeds cash`), then enter `$203`.
+  - *(Optional 5s safety clip)* Show typing `$12,500` on `$10,000` balance shows `! insufficient balance`, then enter `$203`.
   - `Tap` -> **Mandatory `Are You Sure?` screen** showing **`Risking 2.0% of balance`** -> second `Tap` executes paper order and posts the auto-sized entry/SL/TP receipt to Telegram.
 - **1:15 – 1:45 (Per-Coin Position Management):** One-tap `Move ETH SL to BE`, `Take 50% ETH`, and `Close ETH 100%` — each posting clean live receipts to Telegram.
 - **1:45 – 2:00 (Clean Exit):** Double-tap on root `GLANCE` -> official Even Hub `shutDownPageContainer(1)` exit confirmation. Done!
